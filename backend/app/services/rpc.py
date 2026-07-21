@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -21,6 +22,75 @@ log = get_logger(__name__)
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
 # Node-side transient errors (node behind, tx not yet available, etc.)
 RETRYABLE_RPC_CODES = {-32004, -32005, -32014}
+
+# Execution-critical methods are never blocked by the daily credit budget:
+# a live position exit must not wait until tomorrow. They still consume
+# credits from the counter.
+BUDGET_EXEMPT_METHODS = {
+    "sendTransaction",
+    "simulateTransaction",
+    "getSignatureStatuses",
+}
+
+
+class RpcBudget:
+    """Hard daily cap on RPC calls, shared across processes via Redis.
+
+    Every call increments an atomic per-UTC-day counter. Once the day's
+    budget is spent, non-exempt calls sleep until the day rolls over. Redis
+    being unreachable fails open — losing budget accounting is preferable to
+    halting ingestion and trading.
+    """
+
+    KEY_PREFIX = "rpc:credits:"
+    # Counter keys outlive their day briefly so operators can inspect usage.
+    KEY_TTL_SECONDS = 2 * 86400
+    POLL_SECONDS = 60.0
+    WARN_EVERY_SECONDS = 300.0
+
+    def __init__(self, redis: Any, daily_limit: int) -> None:
+        self._redis = redis
+        self._limit = daily_limit
+        self._last_warn = 0.0
+
+    @staticmethod
+    def _key() -> str:
+        return RpcBudget.KEY_PREFIX + datetime.now(UTC).strftime("%Y-%m-%d")
+
+    async def _incr(self) -> int | None:
+        try:
+            key = self._key()
+            used = int(await self._redis.incr(key))
+            if used == 1:
+                await self._redis.expire(key, self.KEY_TTL_SECONDS)
+            return used
+        except Exception as exc:  # noqa: BLE001 - fail open on any redis error
+            log.warning("rpc_budget_redis_unavailable", error=str(exc))
+            return None
+
+    async def acquire(self, exempt: bool = False) -> None:
+        if self._limit <= 0:
+            return
+        used = await self._incr()
+        if used is None:
+            return
+        metrics.RPC_BUDGET_USED.set(used)
+        if used <= self._limit or exempt:
+            return
+        while True:
+            now = time.monotonic()
+            if now - self._last_warn >= self.WARN_EVERY_SECONDS:
+                self._last_warn = now
+                log.warning(
+                    "rpc_daily_budget_exhausted",
+                    used=used,
+                    limit=self._limit,
+                    resumes="next UTC day",
+                )
+            await asyncio.sleep(self.POLL_SECONDS)
+            used = await self._incr()
+            if used is None or used <= self._limit:
+                return
 
 
 class RpcError(Exception):
@@ -55,10 +125,12 @@ class SolanaRpc:
         timeout_seconds: float = 30.0,
         max_retries: int = 5,
         requests_per_second: float = 8.0,
+        budget: RpcBudget | None = None,
     ):
         self._url = url
         self._max_retries = max_retries
         self._limiter = _RateLimiter(requests_per_second)
+        self._budget = budget
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
 
     async def aclose(self) -> None:
@@ -67,7 +139,11 @@ class SolanaRpc:
     async def call(self, method: str, params: list[Any] | None = None) -> Any:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
         backoff = 0.5
+        budget_exempt = method in BUDGET_EXEMPT_METHODS
         for attempt in range(self._max_retries + 1):
+            # Each HTTP attempt (retries included) costs one provider credit.
+            if self._budget is not None:
+                await self._budget.acquire(exempt=budget_exempt)
             await self._limiter.wait()
             started = time.monotonic()
             try:

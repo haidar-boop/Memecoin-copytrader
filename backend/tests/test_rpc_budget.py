@@ -1,0 +1,88 @@
+"""Tests for the shared daily RPC credit budget."""
+
+from __future__ import annotations
+
+import pytest
+
+from app.services.rpc import BUDGET_EXEMPT_METHODS, RpcBudget
+
+
+class FakeRedis:
+    """Minimal async Redis stand-in for INCR/EXPIRE."""
+
+    def __init__(self) -> None:
+        self.counters: dict[str, int] = {}
+        self.expires: dict[str, int] = {}
+        self.fail = False
+
+    async def incr(self, key: str) -> int:
+        if self.fail:
+            raise ConnectionError("redis down")
+        self.counters[key] = self.counters.get(key, 0) + 1
+        return self.counters[key]
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        self.expires[key] = ttl
+        return True
+
+
+@pytest.fixture
+def fake_redis() -> FakeRedis:
+    return FakeRedis()
+
+
+async def test_zero_limit_never_touches_redis(fake_redis: FakeRedis) -> None:
+    budget = RpcBudget(fake_redis, 0)
+    await budget.acquire()
+    assert fake_redis.counters == {}
+
+
+async def test_under_limit_passes_and_sets_ttl(fake_redis: FakeRedis) -> None:
+    budget = RpcBudget(fake_redis, 5)
+    for _ in range(5):
+        await budget.acquire()
+    (key,) = fake_redis.counters
+    assert key.startswith(RpcBudget.KEY_PREFIX)
+    assert fake_redis.counters[key] == 5
+    assert fake_redis.expires[key] == RpcBudget.KEY_TTL_SECONDS
+
+
+async def test_over_limit_blocks_until_budget_frees(
+    fake_redis: FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    budget = RpcBudget(fake_redis, 2)
+    await budget.acquire()
+    await budget.acquire()
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        # Simulate the UTC day rolling over: fresh counter.
+        fake_redis.counters.clear()
+
+    monkeypatch.setattr("app.services.rpc.asyncio.sleep", fake_sleep)
+    await budget.acquire()
+    assert sleeps == [RpcBudget.POLL_SECONDS]
+
+
+async def test_over_limit_exempt_never_blocks(fake_redis: FakeRedis) -> None:
+    budget = RpcBudget(fake_redis, 1)
+    await budget.acquire()
+    # Would block if not exempt; must return immediately (still counted).
+    await budget.acquire(exempt=True)
+    (key,) = fake_redis.counters
+    assert fake_redis.counters[key] == 2
+
+
+async def test_redis_failure_fails_open(fake_redis: FakeRedis) -> None:
+    budget = RpcBudget(fake_redis, 1)
+    fake_redis.fail = True
+    await budget.acquire()
+    await budget.acquire()
+
+
+def test_execution_critical_methods_are_exempt() -> None:
+    assert "sendTransaction" in BUDGET_EXEMPT_METHODS
+    assert "simulateTransaction" in BUDGET_EXEMPT_METHODS
+    assert "getTransaction" not in BUDGET_EXEMPT_METHODS

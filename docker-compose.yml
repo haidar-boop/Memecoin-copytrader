@@ -5,6 +5,8 @@ x-backend-env: &backend-env
   REDIS_URL: redis://redis:6379/0
   SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
   SOLANA_WS_URL: ${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
+  RPC_REQUESTS_PER_SECOND: ${RPC_REQUESTS_PER_SECOND:-8}
+  RPC_DAILY_CREDIT_BUDGET: ${RPC_DAILY_CREDIT_BUDGET:-0}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 x-backend-service: &backend-service

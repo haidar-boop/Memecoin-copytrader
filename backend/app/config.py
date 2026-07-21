@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     rpc_timeout_seconds: float = 30.0
     rpc_max_retries: int = 5
     rpc_requests_per_second: float = 8.0
+    # Hard daily cap on RPC calls (= provider credits), shared across all
+    # services via Redis. 0 disables the cap. Non-critical calls block until
+    # the next UTC day once spent; execution-critical calls are exempt.
+    rpc_daily_credit_budget: int = 0
 
     # --- ingestion ---------------------------------------------------------
     # Which venues the listener subscribes to. Values are Dex enum values.

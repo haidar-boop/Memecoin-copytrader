@@ -20,6 +20,9 @@ DB_WRITE_ERRORS = Counter("db_write_errors_total", "Database write errors")
 
 RPC_REQUESTS = Counter("rpc_requests_total", "Solana RPC requests", ["method", "status"])
 RPC_LATENCY = Histogram("rpc_latency_seconds", "Solana RPC latency", ["method"])
+RPC_BUDGET_USED = Gauge(
+    "rpc_daily_credits_used", "RPC credits consumed against today's daily budget"
+)
 
 # Shared by every periodic job loop (enrichment AND analytics) via
 # services/jobs.py — hence the job-neutral name.

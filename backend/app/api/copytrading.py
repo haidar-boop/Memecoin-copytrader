@@ -23,7 +23,7 @@ from app.config import get_settings
 from app.db.models import CopyPosition, CopyTrade, Token, TradeDecision
 from app.decision.safety import SafetyGuard
 from app.execution.executor import CopyExecutor
-from app.services.rpc import SolanaRpc
+from app.services.rpc import RpcBudget, SolanaRpc
 
 router = APIRouter(prefix="/api/copytrading", tags=["copytrading"])
 
@@ -199,6 +199,7 @@ async def approve_trade(
                 timeout_seconds=settings.rpc_timeout_seconds,
                 max_retries=settings.rpc_max_retries,
                 requests_per_second=settings.rpc_requests_per_second,
+                budget=RpcBudget(redis, settings.rpc_daily_credit_budget),
             )
         executor = CopyExecutor(settings, redis, rpc, guard)
         trade.status = "approved"
