@@ -9,6 +9,10 @@ import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
 TRADES_CHANNEL = "events:trades"
+# Structured operator-facing notifications (copied buys/sells, safety trips,
+# reports, market moves...). Consumed by the WebSocket broadcaster and the
+# Telegram bot.
+NOTIFICATIONS_CHANNEL = "events:notifications"
 SOL_PRICE_KEY = "price:sol_usd"
 HOLDERS_KEY_PREFIX = "holders:"
 

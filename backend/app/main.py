@@ -9,7 +9,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
-from app.api import analytics, copytrading, health, reports, stats, tokens, trades, wallets
+from app.api import (
+    analytics,
+    auth,
+    copytrading,
+    health,
+    reports,
+    stats,
+    system,
+    tokens,
+    trades,
+    wallets,
+    ws,
+)
 from app.config import get_settings
 from app.db.session import build_engine, build_session_factory
 from app.logging_config import configure_logging, get_logger
@@ -59,6 +71,9 @@ def create_app() -> FastAPI:
     app.include_router(analytics.router)
     app.include_router(copytrading.router)
     app.include_router(reports.router)
+    app.include_router(auth.router)
+    app.include_router(system.router)
+    app.include_router(ws.router)
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics() -> Response:

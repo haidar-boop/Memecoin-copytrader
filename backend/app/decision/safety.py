@@ -128,6 +128,16 @@ class SafetyGuard:
     async def trip_emergency_stop(self, reason: str) -> None:
         await self._redis.set(EMERGENCY_STOP_KEY, reason)
         log.error("emergency_stop_tripped", reason=reason)
+        # Best-effort operator alert; never let a notification failure prevent
+        # the kill switch from engaging.
+        try:
+            from app.services.notifications import Notification, NotificationService
+
+            await NotificationService(self._redis).emit(
+                Notification.emergency_stop(reason)
+            )
+        except Exception as exc:  # pragma: no cover - best-effort side channel
+            log.warning("emergency_stop_notify_failed", error=str(exc))
 
     async def clear_emergency_stop(self) -> None:
         await self._redis.delete(EMERGENCY_STOP_KEY, FAILURE_STREAK_KEY)

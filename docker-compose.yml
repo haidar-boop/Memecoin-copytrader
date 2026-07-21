@@ -126,6 +126,27 @@ services:
     volumes:
       - mlmodels:/srv/backend/models
 
+  telegram:
+    <<: *backend-service
+    environment:
+      <<: *backend-env
+      METRICS_PORT: "9107"
+      # Bot idles harmlessly when the token is unset.
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+    command: ["python", "-m", "workers.run_telegram"]
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      # Browser talks to the API on the host; override for your deployment.
+      NEXT_PUBLIC_API_BASE: "${NEXT_PUBLIC_API_BASE:-http://localhost:8000}"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
   redisdata:

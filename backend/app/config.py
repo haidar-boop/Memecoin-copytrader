@@ -153,9 +153,32 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: list[str] = ["*"]
 
+    # --- auth (Phase 5) ----------------------------------------------------
+    # HS256 signing secret for dashboard JWTs. MUST be overridden in prod;
+    # the API refuses to start auth with the default outside dev.
+    jwt_secret: str = "dev-insecure-change-me"
+    jwt_algorithm: str = "HS256"
+    jwt_expiry_minutes: int = 720
+    # Single dashboard operator. Password is a bcrypt hash (never plaintext);
+    # if unset, login is disabled and protected endpoints are inaccessible.
+    admin_username: str = "admin"
+    admin_password_hash: str | None = None
+
+    # --- notifications / telegram (Phase 5) --------------------------------
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    # Which notification kinds the bot forwards (empty = all).
+    telegram_enabled_kinds: list[str] = []
+    notify_large_market_move_pct: float = 5.0
+    notify_confidence_change_min: float = 15.0  # min score delta to notify
+
     # --- monitoring --------------------------------------------------------
     metrics_enabled: bool = True
     metrics_port: int = 9100
+
+    @property
+    def is_dev(self) -> bool:
+        return self.app_env == "dev"
 
     @property
     def database_url_sync(self) -> str:

@@ -29,6 +29,7 @@ from app.execution import jupiter, wallet
 from app.ingestion.parsers.util import LAMPORTS_PER_SOL
 from app.ingestion.programs import WSOL_MINT
 from app.logging_config import get_logger
+from app.services.notifications import Notification, NotificationService
 from app.services.redis import try_dedup
 from app.services.rpc import SolanaRpc
 
@@ -59,9 +60,26 @@ class CopyExecutor:
         self._rpc = rpc
         self._guard = guard
         self._jupiter = jupiter_client or jupiter.JupiterClient(settings.jupiter_base_url)
+        self._notifier = NotificationService(redis)
         self._keypair = None
         if settings.copy_mode == "live":
             self._keypair = wallet.load_keypair(settings.trading_wallet_secret)
+
+    async def _notify(self, notification: Notification) -> None:
+        """Emit a dashboard/Telegram notification; never break execution on it."""
+        try:
+            await self._notifier.emit(notification)
+        except Exception as exc:  # pragma: no cover - best-effort side channel
+            log.warning("notification_emit_failed", error=str(exc))
+
+    async def _leader_address(self, session: AsyncSession, wallet_id: int) -> str:
+        """Best-effort leader wallet address for a notification (id fallback)."""
+        from app.db.models import Wallet
+
+        address = (
+            await session.execute(select(Wallet.address).where(Wallet.id == wallet_id))
+        ).scalar_one_or_none()
+        return address or str(wallet_id)
 
     # --- entry -------------------------------------------------------------
 
@@ -122,6 +140,13 @@ class CopyExecutor:
             outcome = await self._live_fill(session, trade, quote, decimals)
             if outcome == "confirmed":
                 await self._guard.start_cooldown(token_mint)
+                await self._notify(
+                    Notification.copied_buy(
+                        token_mint,
+                        float(trade.size_sol),
+                        await self._leader_address(session, trade.leader_wallet_id),
+                    )
+                )
                 return trade
             # Once a transaction has been broadcast we MUST NOT retry: the
             # first submission may still confirm on-chain, and a second swap
@@ -238,6 +263,7 @@ class CopyExecutor:
             roi=round(roi, 4),
             mode=self._settings.copy_mode,
         )
+        await self._notify(Notification.copied_sell(token_mint, float(pnl)))
         return trade
 
     # --- fills -------------------------------------------------------------
@@ -261,6 +287,13 @@ class CopyExecutor:
         await self._open_position(session, trade, token_amount)
         await self._guard.record_execution_result(True)
         await self._guard.start_cooldown(token_mint)
+        await self._notify(
+            Notification.copied_buy(
+                token_mint,
+                float(trade.size_sol),
+                await self._leader_address(session, trade.leader_wallet_id),
+            )
+        )
         return trade
 
     async def _live_fill(

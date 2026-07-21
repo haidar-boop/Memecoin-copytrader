@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0b0f17;
+  color: #e5ecf5;
+}
+
+@layer components {
+  .card {
+    @apply bg-panel border border-edge rounded-xl p-4;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+           bg-panel2 border border-edge hover:border-accent transition-colors;
+  }
+  .btn-danger {
+    @apply bg-bad/10 border-bad/40 text-bad hover:border-bad;
+  }
+  .input {
+    @apply w-full rounded-lg bg-panel2 border border-edge px-3 py-2 text-sm
+           outline-none focus:border-accent;
+  }
+  .th {
+    @apply text-left text-xs font-semibold uppercase tracking-wide text-muted px-3 py-2;
+  }
+  .td {
+    @apply px-3 py-2 text-sm border-t border-edge/60;
+  }
+  .pill {
+    @apply inline-block rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+}
