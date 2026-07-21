@@ -140,11 +140,16 @@ services:
     command: ["python", "-m", "workers.run_telegram"]
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Baked into the client JS bundle at build time (Next.js inlines
+        # NEXT_PUBLIC_* vars during `npm run build`) — a runtime-only
+        # override here has no effect, the image must be rebuilt when this
+        # changes. Browser talks to the API on the host; override for your
+        # deployment (e.g. http://YOUR_DROPLET_IP:8000).
+        NEXT_PUBLIC_API_BASE: "${NEXT_PUBLIC_API_BASE:-http://localhost:8000}"
     restart: unless-stopped
-    environment:
-      # Browser talks to the API on the host; override for your deployment.
-      NEXT_PUBLIC_API_BASE: "${NEXT_PUBLIC_API_BASE:-http://localhost:8000}"
     ports:
       - "3000:3000"
     depends_on:
