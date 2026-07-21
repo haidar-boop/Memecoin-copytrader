@@ -130,3 +130,79 @@ def format_report(report: dict[str, Any]) -> str:
     else:
         lines.append("(no summary available)")
     return "\n".join(lines)
+
+
+def _short(addr: Any, keep: int = 4) -> str:
+    s = str(addr or "?")
+    return s if len(s) <= keep * 2 + 1 else f"{s[:keep]}…{s[-keep:]}"
+
+
+def format_health(health: dict[str, Any]) -> str:
+    """Render the bot-side system health summary."""
+
+    def ok(flag: bool) -> str:
+        return "✅" if flag else "\U0001f6a8"
+
+    lines = [
+        "\U0001fa7a System health",
+        f"{ok(health.get('db_ok', False))} Database",
+        f"{ok(health.get('redis_ok', False))} Redis",
+    ]
+    age = health.get("last_trade_age_minutes")
+    if age is None:
+        lines.append("\U0001f6a8 Ingestion: no trades recorded yet")
+    else:
+        flag = ok(age <= 30)
+        lines.append(f"{flag} Ingestion: last trade {age:.0f} min ago")
+    depth = health.get("queue_depth")
+    if depth is not None:
+        lines.append(f"Queue depth: {depth:,}")
+    used, limit = health.get("credits_used"), health.get("credits_limit")
+    if limit:
+        pct = 100.0 * used / limit if used is not None else 0.0
+        flag = ok(used is None or used <= limit)
+        lines.append(f"{flag} RPC credits today: {used or 0:,} / {limit:,} ({pct:.0f}%)")
+    elif used is not None:
+        lines.append(f"RPC credits today: {used:,} (no cap)")
+    stop = health.get("emergency_stop")
+    lines.append(
+        f"\U0001f6a8 EMERGENCY STOP: {stop}" if stop else "✅ No emergency stop"
+    )
+    return "\n".join(lines)
+
+
+def format_top_wallets(rows: Iterable[dict[str, Any]]) -> str:
+    """Render the top tracked wallets by confidence."""
+    rows = list(rows)
+    lines = ["\U0001f3c6 Top wallets by confidence"]
+    if not rows:
+        lines.append("No scored wallets yet — analytics needs more history.")
+    for i, row in enumerate(rows, 1):
+        conf = row.get("confidence_score")
+        pnl = row.get("total_pnl_sol")
+        win = row.get("win_rate")
+        win_txt = f", win {float(win) * 100:.0f}%" if win is not None else ""
+        lines.append(
+            f"{i}. {_short(row.get('address'))} — conf {_fmt_sol(conf)}"
+            f", PnL {_fmt_sol(pnl)} SOL{win_txt}"
+        )
+    return "\n".join(lines)
+
+
+def format_recent_trades(rows: Iterable[dict[str, Any]]) -> str:
+    """Render the most recent observed trades, newest first."""
+    rows = list(rows)
+    lines = ["⚡ Recent trades"]
+    if not rows:
+        lines.append("Nothing observed yet.")
+    for row in rows:
+        side = str(row.get("side", "?")).upper()
+        arrow = "\U0001f7e2" if side == "BUY" else "\U0001f534"
+        age = row.get("age_minutes")
+        age_txt = f" ({age:.0f}m ago)" if age is not None else ""
+        lines.append(
+            f"{arrow} {side} {_short(row.get('token_mint'))} "
+            f"{_fmt_sol(row.get('quote_amount'))} SOL by {_short(row.get('wallet'))}"
+            f"{age_txt}"
+        )
+    return "\n".join(lines)

@@ -337,3 +337,85 @@ async def test_stop_only_for_operator_chat(session_factory) -> None:
     reply = await notifier.stop("777")
     assert "Emergency stop" in reply
     assert redis.data.get("copy:emergency_stop") == "manual stop via Telegram"
+
+
+def test_format_health_ok_and_alerts() -> None:
+    from telegram_bot.formatting import format_health
+
+    good = format_health(
+        {
+            "db_ok": True,
+            "redis_ok": True,
+            "last_trade_age_minutes": 3.0,
+            "queue_depth": 42,
+            "credits_used": 100_000,
+            "credits_limit": 300_000,
+            "emergency_stop": None,
+        }
+    )
+    assert "✅ Database" in good and "42" in good and "33%" in good
+    assert "No emergency stop" in good
+
+    bad = format_health(
+        {
+            "db_ok": False,
+            "redis_ok": False,
+            "last_trade_age_minutes": None,
+            "queue_depth": None,
+            "credits_used": None,
+            "credits_limit": None,
+            "emergency_stop": "manual trip",
+        }
+    )
+    assert "no trades recorded yet" in bad
+    assert "EMERGENCY STOP: manual trip" in bad
+
+
+def test_format_top_wallets_and_trades_empty_and_rows() -> None:
+    from telegram_bot.formatting import format_recent_trades, format_top_wallets
+
+    assert "No scored wallets" in format_top_wallets([])
+    text = format_top_wallets(
+        [
+            {
+                "address": "WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "confidence_score": 82.1,
+                "total_pnl_sol": 12.5,
+                "win_rate": 0.61,
+            }
+        ]
+    )
+    assert "1." in text and "82.1" in text and "61%" in text
+
+    assert "Nothing observed" in format_recent_trades([])
+    line = format_recent_trades(
+        [
+            {
+                "side": "buy",
+                "token_mint": "MintBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                "quote_amount": 1.5,
+                "wallet": "WalletCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+                "age_minutes": 12.0,
+            }
+        ]
+    )
+    assert "BUY" in line and "1.5000" in line and "12m ago" in line
+
+
+@pytest.mark.asyncio
+async def test_resume_restricted_to_operator_chat() -> None:
+    calls: list[str] = []
+
+    class _GuardStub:
+        async def clear_emergency_stop(self) -> None:
+            calls.append("cleared")
+
+    notifier = TelegramNotifier(
+        Settings(telegram_chat_id="123"), _FakeRedis([]), session_factory=None
+    )
+    notifier._guard = _GuardStub()
+    assert await notifier.resume("999") == ""
+    assert calls == []
+    reply = await notifier.resume("123")
+    assert "cleared" in reply.lower() or "resume" in reply.lower()
+    assert calls == ["cleared"]

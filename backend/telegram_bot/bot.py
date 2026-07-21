@@ -26,14 +26,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.db.models import CopyPosition, Report, Token
-from app.decision.safety import SafetyGuard
+from app.db.models import CopyPosition, Report, Token, Trade, Wallet, WalletStats
+from app.decision.safety import EMERGENCY_STOP_KEY, SafetyGuard
 from app.logging_config import get_logger
 from app.services.redis import NOTIFICATIONS_CHANNEL
 from telegram_bot.formatting import (
+    format_health,
     format_portfolio,
+    format_recent_trades,
     format_report,
     format_status,
+    format_top_wallets,
     notification_to_text,
 )
 
@@ -188,13 +191,129 @@ class TelegramNotifier:
             }
         )
 
+    async def health_text(self) -> str:
+        from datetime import UTC, datetime
+
+        health: dict[str, Any] = {
+            "db_ok": False,
+            "redis_ok": False,
+            "last_trade_age_minutes": None,
+            "queue_depth": None,
+            "credits_used": None,
+            "credits_limit": self._settings.rpc_daily_credit_budget or None,
+            "emergency_stop": None,
+        }
+        try:
+            async with self._session_factory() as session:
+                latest = (
+                    await session.execute(
+                        select(func.max(Trade.block_time))
+                    )
+                ).scalar_one_or_none()
+            health["db_ok"] = True
+            if latest is not None:
+                if latest.tzinfo is None:
+                    latest = latest.replace(tzinfo=UTC)
+                health["last_trade_age_minutes"] = max(
+                    (datetime.now(UTC) - latest).total_seconds() / 60.0, 0.0
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("telegram_health_db_failed", error=str(exc))
+        try:
+            from app.services.rpc import RpcBudget
+
+            health["queue_depth"] = await self._redis.xlen(
+                self._settings.ingest_stream_key
+            )
+            raw = await self._redis.get(
+                RpcBudget.KEY_PREFIX + datetime.now(UTC).strftime("%Y-%m-%d")
+            )
+            health["credits_used"] = int(raw) if raw is not None else 0
+            health["redis_ok"] = True
+            health["emergency_stop"] = await self._redis.get(EMERGENCY_STOP_KEY)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("telegram_health_redis_failed", error=str(exc))
+        return format_health(health)
+
+    async def wallets_text(self, limit: int = 5) -> str:
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        Wallet.address,
+                        WalletStats.confidence_score,
+                        WalletStats.total_pnl_sol,
+                        WalletStats.win_rate,
+                    )
+                    .join(Wallet, Wallet.id == WalletStats.wallet_id)
+                    .where(WalletStats.confidence_score.is_not(None))
+                    .order_by(WalletStats.confidence_score.desc())
+                    .limit(limit)
+                )
+            ).all()
+        return format_top_wallets(
+            {
+                "address": address,
+                "confidence_score": conf,
+                "total_pnl_sol": pnl,
+                "win_rate": win,
+            }
+            for address, conf, pnl, win in rows
+        )
+
+    async def trades_text(self, limit: int = 5) -> str:
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        Trade.side,
+                        Trade.quote_amount,
+                        Trade.block_time,
+                        Token.mint,
+                        Wallet.address,
+                    )
+                    .join(Token, Token.id == Trade.token_id)
+                    .join(Wallet, Wallet.id == Trade.wallet_id)
+                    .order_by(Trade.block_time.desc())
+                    .limit(limit)
+                )
+            ).all()
+        out = []
+        for side, quote, block_time, mint, address in rows:
+            if block_time.tzinfo is None:
+                block_time = block_time.replace(tzinfo=UTC)
+            out.append(
+                {
+                    "side": side,
+                    "quote_amount": quote,
+                    "token_mint": mint,
+                    "wallet": address,
+                    "age_minutes": max((now - block_time).total_seconds() / 60.0, 0.0),
+                }
+            )
+        return format_recent_trades(out)
+
+    def _is_operator(self, chat_id: str | int | None) -> bool:
+        return str(chat_id) == str(self._settings.telegram_chat_id)
+
     async def stop(self, chat_id: str | int | None) -> str:
         """Trip the emergency stop, but only for the operator chat."""
-        if str(chat_id) != str(self._settings.telegram_chat_id):
+        if not self._is_operator(chat_id):
             log.warning("telegram_stop_ignored_foreign_chat", chat_id=str(chat_id))
             return ""
         await self._guard.trip_emergency_stop("manual stop via Telegram")
         return "\U0001f6d1 Emergency stop activated. Copy trading halted."
+
+    async def resume(self, chat_id: str | int | None) -> str:
+        """Clear the emergency stop — operator chat only."""
+        if not self._is_operator(chat_id):
+            log.warning("telegram_resume_ignored_foreign_chat", chat_id=str(chat_id))
+            return ""
+        await self._guard.clear_emergency_stop()
+        return "✅ Emergency stop cleared. Copy trading may resume."
 
     # -- dispatcher --------------------------------------------------------
 
@@ -217,9 +336,33 @@ class TelegramNotifier:
         async def _report(message: Message) -> None:
             await message.answer(await self.report_text())
 
+        @dp.message(Command("health"))
+        async def _health(message: Message) -> None:
+            await message.answer(await self.health_text())
+
+        @dp.message(Command("budget"))
+        async def _budget(message: Message) -> None:
+            # The health card carries the credit line; a dedicated command
+            # keeps the common question one word long.
+            await message.answer(await self.health_text())
+
+        @dp.message(Command("wallets"))
+        async def _wallets(message: Message) -> None:
+            await message.answer(await self.wallets_text())
+
+        @dp.message(Command("trades"))
+        async def _trades(message: Message) -> None:
+            await message.answer(await self.trades_text())
+
         @dp.message(Command("stop"))
         async def _stop(message: Message) -> None:
             reply = await self.stop(message.chat.id)
+            if reply:
+                await message.answer(reply)
+
+        @dp.message(Command("resume"))
+        async def _resume(message: Message) -> None:
+            reply = await self.resume(message.chat.id)
             if reply:
                 await message.answer(reply)
 
@@ -268,9 +411,14 @@ class TelegramNotifier:
 HELP_TEXT = (
     "\U0001f916 Copy-trader bot commands:\n"
     "/status — copy-trading state and exposure\n"
+    "/health — database, ingestion, queue, RPC budget\n"
+    "/budget — RPC credit usage (same card as /health)\n"
     "/portfolio — open positions and realized PnL\n"
+    "/wallets — top wallets by confidence\n"
+    "/trades — most recent observed trades\n"
     "/report — latest weekly report\n"
     "/stop — activate the emergency stop\n"
+    "/resume — clear the emergency stop\n"
     "/help — show this message"
 )
 
