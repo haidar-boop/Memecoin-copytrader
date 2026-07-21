@@ -1,9 +1,11 @@
-# Memecoin Copytrader — Phase 1: Intelligence Engine
+# Memecoin Copytrader — Intelligence Engine & Analysis Brain
 
-AI-powered Solana memecoin copy-trading platform. **Phase 1 does not trade.**
-It continuously watches Solana DEX activity and builds an append-only learning
-database of wallets, tokens, trades, market conditions, and outcomes — the
-foundation the later analysis, decision, and execution phases learn from.
+AI-powered Solana memecoin copy-trading platform. **Phases 1-2 do not trade.**
+Phase 1 continuously watches Solana DEX activity and builds an append-only
+learning database of wallets, tokens, trades, market conditions, and
+outcomes. Phase 2 is the brain on top of it: wallet performance metrics,
+evidence-gated confidence scores with full explanations, trading-style
+recognition, calibrated ML models, and pattern discovery.
 
 ## Architecture
 
@@ -77,10 +79,35 @@ optional heavy holder-count job (`HOLDERS_ENABLED`).
 - `GET /api/stats/ingestion` for table counts, queue depth, listener
   checkpoint
 
+## Phase 2 — Wallet Analysis & Strategy Learning
+
+The `analytics` worker runs four periodic jobs (intervals in `.env`):
+
+- **wallet_stats** — per-wallet ROI, win rate, profit factor, max drawdown,
+  hold times, position sizing, entry timing, consistency; every cycle also
+  appends a `wallet_stats_snapshots` row so score evolution is itself
+  training data. Confidence scores (0-100) come from
+  `app/analytics/confidence.py`: Bayesian-shrunk components with a stored
+  explanation payload — the API always answers *why* a wallet scores what it
+  does.
+- **strategy** — feature-based clustering (scikit-learn KMeans) into named
+  styles (sniper, scalper, momentum, swing, holder, accumulator) plus
+  per-style performance windows; falls back to rule-based labeling below
+  `STRATEGY_MIN_WALLETS`.
+- **patterns** — evidence-gated pattern rows (time-of-day effects, token
+  lifecycle/entry timing, position-size effects, hold-time buckets, whale
+  flows, volume trends), each with sample counts and baselines.
+- **ml_retrain** — calibrated gradient-boosting models (`trade_profit`,
+  `wallet_persistence`) with time-ordered walk-forward evaluation (AUC,
+  Brier), a versioned model registry, and every prediction persisted for
+  Phase 4 error analysis. Training is guarded by `ML_MIN_TRAINING_ROWS`.
+
+Key endpoints: `/api/analytics/wallets/top`, `/api/wallets/{address}/stats`
+(+`/history`), `/api/analytics/strategies`, `/api/analytics/patterns`,
+`/api/analytics/models`.
+
 ## Roadmap
 
-- **Phase 2**: wallet analysis & strategy learning (metrics, confidence
-  scores, strategy clustering, ML models, pattern discovery)
 - **Phase 3**: decision engine & copy trading (evidence-gated, paper-trading
   default, strict safety limits)
 - **Phase 4**: continuous self-evaluation & market regime learning

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.analytics import WalletStatsOut, WalletStatsSnapshotOut
 from app.api.deps import get_db
 from app.api.schemas import PositionOut, TradeOut, WalletOut
-from app.db.models import Position, Token, Trade, Wallet
+from app.db.models import Position, Token, Trade, Wallet, WalletStats, WalletStatsSnapshot
 
 router = APIRouter(prefix="/api/wallets", tags=["wallets"])
 
@@ -98,3 +101,45 @@ async def wallet_positions(
     if status_filter:
         stmt = stmt.where(Position.status == status_filter)
     return list((await db.execute(stmt)).scalars())
+
+
+@router.get("/{address}/stats", response_model=WalletStatsOut)
+async def wallet_stats(address: str, db: AsyncSession = Depends(get_db)) -> WalletStats:
+    wallet = (
+        await db.execute(select(Wallet).where(Wallet.address == address))
+    ).scalar_one_or_none()
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="wallet not found")
+    stats = (
+        await db.execute(select(WalletStats).where(WalletStats.wallet_id == wallet.id))
+    ).scalar_one_or_none()
+    if stats is None:
+        raise HTTPException(status_code=404, detail="wallet stats not computed yet")
+    return stats
+
+
+@router.get("/{address}/stats/history", response_model=list[WalletStatsSnapshotOut])
+async def wallet_stats_history(
+    address: str,
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(200, ge=1, le=2000),
+    db: AsyncSession = Depends(get_db),
+) -> list[WalletStatsSnapshot]:
+    wallet = (
+        await db.execute(select(Wallet).where(Wallet.address == address))
+    ).scalar_one_or_none()
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="wallet not found")
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = (
+        await db.execute(
+            select(WalletStatsSnapshot)
+            .where(
+                WalletStatsSnapshot.wallet_id == wallet.id,
+                WalletStatsSnapshot.ts >= since,
+            )
+            .order_by(WalletStatsSnapshot.ts.desc())
+            .limit(limit)
+        )
+    ).scalars()
+    return list(rows)

@@ -22,6 +22,7 @@ dependencies = [
     "structlog>=24.1",
     "prometheus-client>=0.20",
     "solders>=0.21",
+    "scikit-learn>=1.4",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +52,12 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "ASYNC"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# The ML registry is a once-a-day batch job in its own worker: joblib itself
+# is blocking, so the surrounding pathlib calls are noise, not a hazard.
+"app/analytics/ml/registry.py" = ["ASYNC240", "ASYNC230"]
+"tests/*" = ["ASYNC240", "ASYNC230"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI dependency injection is expressed through call defaults by design.

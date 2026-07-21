@@ -32,6 +32,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -300,4 +301,178 @@ HYPERTABLES: list[tuple[str, str]] = [
     ("token_snapshots", "ts"),
     ("wallet_snapshots", "ts"),
     ("market_snapshots", "ts"),
+]
+
+
+# --------------------------------------------------------------------------
+# Phase 2: wallet analysis & strategy learning (migration 0002)
+# --------------------------------------------------------------------------
+
+
+class WalletMetricsColumns:
+    """Metric columns shared by the current-stats table and its history.
+
+    ``wallet_stats`` is operational state (recomputed in place);
+    ``wallet_stats_snapshots`` appends one row per analytics cycle so score
+    evolution itself becomes training data. PNL metrics are SOL-denominated
+    and derived from closed positions; trades remain the source of truth.
+    """
+
+    trade_count: Mapped[int] = mapped_column(Integer, default=0)
+    buy_count: Mapped[int] = mapped_column(Integer, default=0)
+    sell_count: Mapped[int] = mapped_column(Integer, default=0)
+    position_count: Mapped[int] = mapped_column(Integer, default=0)
+    closed_position_count: Mapped[int] = mapped_column(Integer, default=0)
+    win_count: Mapped[int] = mapped_column(Integer, default=0)
+    win_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    total_pnl_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    total_volume_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    avg_roi: Mapped[Decimal | None] = mapped_column(Amount)
+    median_roi: Mapped[Decimal | None] = mapped_column(Amount)
+    profit_factor: Mapped[Decimal | None] = mapped_column(Amount)  # None = no losses yet
+    max_drawdown_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Amount)
+    avg_hold_seconds: Mapped[int | None] = mapped_column(BigInteger)
+    median_hold_seconds: Mapped[int | None] = mapped_column(BigInteger)
+    avg_position_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    max_position_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    # Seconds between a token's first observed activity and this wallet's entry.
+    avg_entry_delay_seconds: Mapped[int | None] = mapped_column(BigInteger)
+    trades_per_day: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    # Closed positions exited via more than one sell / all closed positions.
+    partial_exit_ratio: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    roi_std: Mapped[Decimal | None] = mapped_column(Amount)  # consistency proxy
+    pnl_7d_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    pnl_30d_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    first_trade_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    last_trade_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))  # 0..100
+    # Explanation payload: [{component, value, weight, contribution, note}].
+    confidence_components: Mapped[list | None] = mapped_column(JSONVariant)
+    style: Mapped[str | None] = mapped_column(String(32))
+    style_confidence: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+
+
+class WalletStats(WalletMetricsColumns, Base):
+    __tablename__ = "wallet_stats"
+
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"), primary_key=True)
+    computed_at: Mapped[datetime] = mapped_column(TZDateTime)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=UTC_NOW)
+
+    __table_args__ = (
+        Index("ix_wallet_stats_confidence", "confidence_score"),
+        Index("ix_wallet_stats_style", "style"),
+    )
+
+
+class WalletStatsSnapshot(WalletMetricsColumns, Base):
+    """Append-only history of wallet metrics. Hypertable on ``ts``."""
+
+    __tablename__ = "wallet_stats_snapshots"
+
+    wallet_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=UTC_NOW)
+
+
+class StrategyCluster(Base):
+    """One discovered trading-style cluster per clustering run. Append-only."""
+
+    __tablename__ = "strategy_clusters"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    computed_at: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    name: Mapped[str] = mapped_column(String(32))
+    member_count: Mapped[int] = mapped_column(Integer)
+    feature_names: Mapped[list | None] = mapped_column(JSONVariant)
+    centroid: Mapped[list | None] = mapped_column(JSONVariant)
+    description: Mapped[str | None] = mapped_column(Text)
+
+
+class StrategyStat(Base):
+    """Per-style performance over a trailing window. Append-only."""
+
+    __tablename__ = "strategy_stats"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime)
+    style: Mapped[str] = mapped_column(String(32))
+    window_days: Mapped[int] = mapped_column(Integer)
+    wallet_count: Mapped[int] = mapped_column(Integer)
+    closed_positions: Mapped[int] = mapped_column(Integer)
+    win_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    avg_roi: Mapped[Decimal | None] = mapped_column(Amount)
+    total_pnl_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    profit_factor: Mapped[Decimal | None] = mapped_column(Amount)
+    avg_hold_seconds: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (Index("ix_strategy_stats_style_ts", "style", "ts"),)
+
+
+class MlModel(Base):
+    """Registry of trained model artifacts and their evaluation metrics."""
+
+    __tablename__ = "ml_models"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+    algo: Mapped[str] = mapped_column(String(64))
+    trained_at: Mapped[datetime] = mapped_column(TZDateTime)
+    training_rows: Mapped[int] = mapped_column(Integer)
+    params: Mapped[dict | None] = mapped_column(JSONVariant)
+    metrics: Mapped[dict | None] = mapped_column(JSONVariant)  # auc/brier/calibration...
+    feature_names: Mapped[list | None] = mapped_column(JSONVariant)
+    artifact_path: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="uq_ml_models_name_version"),
+        Index("ix_ml_models_name_active", "name", "is_active"),
+    )
+
+
+class Prediction(Base):
+    """Every model prediction, kept forever for Phase 4 error analysis."""
+
+    __tablename__ = "predictions"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    model_id: Mapped[int] = mapped_column(ForeignKey("ml_models.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime)
+    subject_type: Mapped[str] = mapped_column(String(16))  # trade | wallet
+    signature: Mapped[str | None] = mapped_column(String(96))
+    wallet_id: Mapped[int | None] = mapped_column(BigInteger)
+    token_id: Mapped[int | None] = mapped_column(BigInteger)
+    predicted: Mapped[dict | None] = mapped_column(JSONVariant)
+    context: Mapped[dict | None] = mapped_column(JSONVariant)
+
+    __table_args__ = (
+        Index("ix_predictions_subject_created", "subject_type", "created_at"),
+        Index("ix_predictions_wallet_created", "wallet_id", "created_at"),
+    )
+
+
+class DiscoveredPattern(Base):
+    """Evidence-backed recurring pattern (time-of-day, lifecycle, whale flow...)."""
+
+    __tablename__ = "patterns"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(48))
+    key: Mapped[dict | None] = mapped_column(JSONVariant)  # bucket identity, e.g. {"hour": 14}
+    stats: Mapped[dict | None] = mapped_column(JSONVariant)
+    evidence_count: Mapped[int] = mapped_column(Integer)
+    window_start: Mapped[datetime | None] = mapped_column(TZDateTime)
+    window_end: Mapped[datetime | None] = mapped_column(TZDateTime)
+    computed_at: Mapped[datetime] = mapped_column(TZDateTime)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_patterns_kind_computed", "kind", "computed_at"),)
+
+
+# Hypertables added by migration 0002 (0001 owns HYPERTABLES above).
+PHASE2_HYPERTABLES: list[tuple[str, str]] = [
+    ("wallet_stats_snapshots", "ts"),
 ]

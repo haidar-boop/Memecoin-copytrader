@@ -74,6 +74,24 @@ class Settings(BaseSettings):
         "https://lite-api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112"
     )
 
+    # --- analytics (Phase 2) -----------------------------------------------
+    wallet_stats_interval_seconds: int = 300
+    strategy_interval_seconds: int = 3600
+    patterns_interval_seconds: int = 3600
+    ml_retrain_interval_seconds: int = 86400
+    # Wallets need this many closed positions before a confidence score is
+    # meaningful; below it, scores shrink hard toward the prior.
+    analytics_min_closed_positions: int = 5
+    analytics_wallet_batch: int = 2000  # wallets recomputed per stats cycle
+    strategy_min_wallets: int = 20  # below this, rule-based styles only
+    strategy_clusters_k: int = 5
+    strategy_window_days: int = 30
+    patterns_window_days: int = 30
+    patterns_min_evidence: int = 30
+    ml_min_training_rows: int = 500
+    ml_label_horizon_hours: int = 24
+    ml_model_dir: str = "./models"
+
     # --- api ---------------------------------------------------------------
     api_host: str = "0.0.0.0"
     api_port: int = 8000

@@ -61,9 +61,16 @@ services:
 
   api:
     <<: *backend-service
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      ML_MODEL_DIR: /srv/backend/models
     ports:
       - "8000:8000"
+    volumes:
+      # Read side of the model registry: artifact paths stored by the
+      # analytics trainer must resolve here too, or predictions can never
+      # be served outside the analytics container.
+      - mlmodels:/srv/backend/models
 
   listener:
     <<: *backend-service
@@ -86,6 +93,17 @@ services:
       METRICS_PORT: "9103"
     command: ["python", "-m", "workers.run_enrichment"]
 
+  analytics:
+    <<: *backend-service
+    environment:
+      <<: *backend-env
+      METRICS_PORT: "9104"
+      ML_MODEL_DIR: /srv/backend/models
+    command: ["python", "-m", "workers.run_analytics"]
+    volumes:
+      - mlmodels:/srv/backend/models
+
 volumes:
   pgdata:
   redisdata:
+  mlmodels:

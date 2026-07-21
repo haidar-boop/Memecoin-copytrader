@@ -21,7 +21,9 @@ DB_WRITE_ERRORS = Counter("db_write_errors_total", "Database write errors")
 RPC_REQUESTS = Counter("rpc_requests_total", "Solana RPC requests", ["method", "status"])
 RPC_LATENCY = Histogram("rpc_latency_seconds", "Solana RPC latency", ["method"])
 
-ENRICH_RUNS = Counter("enrichment_runs_total", "Enrichment job runs", ["job", "status"])
+# Shared by every periodic job loop (enrichment AND analytics) via
+# services/jobs.py — hence the job-neutral name.
+JOB_RUNS = Counter("job_runs_total", "Periodic job cycles", ["job", "status"])
 
 QUEUE_DEPTH = Gauge("ingest_queue_depth", "Pending entries in the ingest stream")
 LAST_SLOT = Gauge("last_seen_slot", "Highest slot observed by the listener")

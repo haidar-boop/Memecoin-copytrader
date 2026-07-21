@@ -4,7 +4,7 @@
 sleeps a staggered initial delay (so cold start does not burst the RPC), then
 alternates run/sleep forever. Every cycle runs in its own DB session and is
 wrapped in try/except: a failing cycle is logged and counted in the
-``ENRICH_RUNS`` metric but never kills the loop. Cancellation (worker
+``JOB_RUNS`` metric but never kills the loop. Cancellation (worker
 shutdown) tears all job tasks down and returns cleanly.
 
 Each job module also exposes a ``run_once``-style function taking explicit
@@ -14,8 +14,6 @@ without the loop machinery.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -24,17 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import Settings
 from app.enrichment import holders, market, snapshots, token_metadata, wallet_balances
 from app.logging_config import get_logger
-from app.services import metrics
+from app.services.jobs import JobSpec as _JobSpec
+from app.services.jobs import run_jobs
 
 log = get_logger(__name__)
 
 __all__ = ["run_enrichment_loop"]
-
-# Seconds between the first runs of consecutive jobs.
-_STAGGER_SECONDS = 3.0
-
-_JobCycle = Callable[[], Awaitable[None]]
-_JobSpec = tuple[str, float, _JobCycle]
 
 
 class EnrichmentRpc(Protocol):
@@ -61,23 +54,6 @@ class EnrichmentRedis(Protocol):
     async def get(self, key: str) -> str | None: ...
 
     async def set(self, key: str, value: str, ex: int | None = None) -> object: ...
-
-
-async def _job_loop(name: str, interval_seconds: float, initial_delay: float, cycle: _JobCycle) -> None:
-    """Run ``cycle`` forever, ``interval_seconds`` apart, surviving failures."""
-    if initial_delay > 0:
-        await asyncio.sleep(initial_delay)
-    while True:
-        try:
-            await cycle()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            metrics.ENRICH_RUNS.labels(job=name, status="error").inc()
-            log.exception("enrichment_cycle_failed", job=name)
-        else:
-            metrics.ENRICH_RUNS.labels(job=name, status="ok").inc()
-        await asyncio.sleep(interval_seconds)
 
 
 def _build_job_specs(
@@ -166,21 +142,4 @@ async def run_enrichment_loop(
     redis: EnrichmentRedis,
 ) -> None:
     """Start every periodic enrichment job; returns cleanly on cancellation."""
-    specs = _build_job_specs(settings, session_factory, rpc, redis)
-    tasks = [
-        asyncio.create_task(
-            _job_loop(name, interval, min(index * _STAGGER_SECONDS, interval), cycle),
-            name=f"enrichment:{name}",
-        )
-        for index, (name, interval, cycle) in enumerate(specs)
-    ]
-    log.info("enrichment_loop_started", jobs=[name for name, _, _ in specs])
-    try:
-        await asyncio.gather(*tasks)
-    except asyncio.CancelledError:
-        log.info("enrichment_loop_stopping")
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-    log.info("enrichment_loop_stopped")
+    await run_jobs("enrichment", _build_job_specs(settings, session_factory, rpc, redis))

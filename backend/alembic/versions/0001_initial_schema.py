@@ -50,16 +50,38 @@ END $$;
 """
 
 
+def _phase1_tables():
+    from app.db import models
+
+    return [
+        models.Wallet.__table__,
+        models.Token.__table__,
+        models.DexPool.__table__,
+        models.Transaction.__table__,
+        models.Trade.__table__,
+        models.FailedTransaction.__table__,
+        models.Position.__table__,
+        models.TokenSnapshot.__table__,
+        models.WalletSnapshot.__table__,
+        models.MarketSnapshot.__table__,
+        models.LpLock.__table__,
+        models.IngestionCheckpoint.__table__,
+    ]
+
+
 def upgrade() -> None:
     from app.db.base import Base
-    from app.db.models import HYPERTABLES  # noqa: F401  (imports register tables)
+    from app.db.models import HYPERTABLES
 
     # In offline (--sql) mode this is Alembic's MockConnection: it renders DDL
     # instead of executing it, and still knows its dialect. Nothing here may
     # inspect query *results*, which is why the Timescale probing lives in
     # DO-guarded SQL rather than Python.
+    #
+    # The table list is pinned: metadata now also carries later-phase tables,
+    # and each migration must create exactly its own revision's set.
     bind = op.get_bind()
-    Base.metadata.create_all(bind=bind)
+    Base.metadata.create_all(bind=bind, tables=_phase1_tables(), checkfirst=False)
 
     if bind.dialect.name != "postgresql":
         return
@@ -77,6 +99,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     from app.db.base import Base
-    from app.db import models  # noqa: F401
 
-    Base.metadata.drop_all(bind=op.get_bind())
+    Base.metadata.drop_all(bind=op.get_bind(), tables=_phase1_tables(), checkfirst=False)
