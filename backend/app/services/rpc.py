@@ -166,10 +166,19 @@ class SolanaRpc:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def call(self, method: str, params: list[Any] | None = None) -> Any:
+    async def call(
+        self,
+        method: str,
+        params: list[Any] | None = None,
+        budget_exempt: bool | None = None,
+    ) -> Any:
+        """``budget_exempt=True`` consumes budget but never blocks on it —
+        for calls that gate live decisions (execution, pre-copy risk probes)
+        where waiting until tomorrow is worse than a small overspend."""
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
         backoff = 0.5
-        budget_exempt = method in BUDGET_EXEMPT_METHODS
+        if budget_exempt is None:
+            budget_exempt = method in BUDGET_EXEMPT_METHODS
         for attempt in range(self._max_retries + 1):
             # Each HTTP attempt (retries included) costs one provider credit.
             if self._budget is not None:
@@ -235,9 +244,16 @@ class SolanaRpc:
         result = await self.call("getBalance", [pubkey, {"commitment": "confirmed"}])
         return None if result is None else int(result.get("value", 0))
 
-    async def get_account_info(self, pubkey: str, encoding: str = "base64") -> dict | None:
+    async def get_account_info(
+        self,
+        pubkey: str,
+        encoding: str = "base64",
+        budget_exempt: bool | None = None,
+    ) -> dict | None:
         result = await self.call(
-            "getAccountInfo", [pubkey, {"encoding": encoding, "commitment": "confirmed"}]
+            "getAccountInfo",
+            [pubkey, {"encoding": encoding, "commitment": "confirmed"}],
+            budget_exempt=budget_exempt,
         )
         return None if result is None else result.get("value")
 
@@ -249,16 +265,28 @@ class SolanaRpc:
         )
         return [] if result is None else list(result.get("value", []))
 
-    async def get_token_supply(self, mint: str) -> dict | None:
-        result = await self.call("getTokenSupply", [mint, {"commitment": "confirmed"}])
+    async def get_token_supply(
+        self, mint: str, budget_exempt: bool | None = None
+    ) -> dict | None:
+        result = await self.call(
+            "getTokenSupply",
+            [mint, {"commitment": "confirmed"}],
+            budget_exempt=budget_exempt,
+        )
         return None if result is None else result.get("value")
 
     async def get_token_account_balance(self, account: str) -> dict | None:
         result = await self.call("getTokenAccountBalance", [account, {"commitment": "confirmed"}])
         return None if result is None else result.get("value")
 
-    async def get_token_largest_accounts(self, mint: str) -> list[dict]:
-        result = await self.call("getTokenLargestAccounts", [mint, {"commitment": "confirmed"}])
+    async def get_token_largest_accounts(
+        self, mint: str, budget_exempt: bool | None = None
+    ) -> list[dict]:
+        result = await self.call(
+            "getTokenLargestAccounts",
+            [mint, {"commitment": "confirmed"}],
+            budget_exempt=budget_exempt,
+        )
         return [] if result is None else list(result.get("value", []))
 
     # --- transaction submission (Phase 3 live execution) -------------------

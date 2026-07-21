@@ -35,11 +35,20 @@ _TOP_HOLDERS = 10
 
 
 class _Rpc(Protocol):
-    async def get_account_info(self, pubkey: str, encoding: str = "base64") -> dict | None: ...
+    async def get_account_info(
+        self,
+        pubkey: str,
+        encoding: str = "base64",
+        budget_exempt: bool | None = None,
+    ) -> dict | None: ...
 
-    async def get_token_supply(self, mint: str) -> dict | None: ...
+    async def get_token_supply(
+        self, mint: str, budget_exempt: bool | None = None
+    ) -> dict | None: ...
 
-    async def get_token_largest_accounts(self, mint: str) -> list[dict]: ...
+    async def get_token_largest_accounts(
+        self, mint: str, budget_exempt: bool | None = None
+    ) -> list[dict]: ...
 
 
 def _amount(entry: dict) -> int:
@@ -81,7 +90,9 @@ class TokenSecurityProbe:
         stored as "" per the contract; RPC failure leaves None (unknown).
         """
         try:
-            value = await self._rpc.get_account_info(token.mint, encoding="jsonParsed")
+            value = await self._rpc.get_account_info(
+                token.mint, encoding="jsonParsed", budget_exempt=True
+            )
         except Exception as exc:  # noqa: BLE001 - degrade to unknown, never raise
             signals.probe_errors.append(f"authorities: {exc}")
             return
@@ -109,8 +120,10 @@ class TokenSecurityProbe:
         stash — counting them would flag every healthy pool as a whale.
         """
         try:
-            largest = await self._rpc.get_token_largest_accounts(token.mint)
-            supply = await self._rpc.get_token_supply(token.mint)
+            largest = await self._rpc.get_token_largest_accounts(
+                token.mint, budget_exempt=True
+            )
+            supply = await self._rpc.get_token_supply(token.mint, budget_exempt=True)
         except Exception as exc:  # noqa: BLE001
             signals.probe_errors.append(f"holders: {exc}")
             return
@@ -149,8 +162,10 @@ class TokenSecurityProbe:
             return
         signals.lp_exists = True
         try:
-            largest = await self._rpc.get_token_largest_accounts(pool.lp_mint)
-            supply = await self._rpc.get_token_supply(pool.lp_mint)
+            largest = await self._rpc.get_token_largest_accounts(
+                pool.lp_mint, budget_exempt=True
+            )
+            supply = await self._rpc.get_token_supply(pool.lp_mint, budget_exempt=True)
         except Exception as exc:  # noqa: BLE001
             signals.probe_errors.append(f"lp: {exc}")
             return

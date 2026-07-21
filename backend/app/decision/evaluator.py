@@ -301,7 +301,19 @@ class Evaluator:
         # --- pre-copy rug-risk assessment ---------------------------------
         rug_verdict: RiskVerdict | None = None
         if settings.rug_check_enabled and self._risk_assessor is not None:
-            rug_verdict = await self._risk_assessor(session, token)
+            try:
+                rug_verdict = await self._risk_assessor(session, token)
+            except Exception as exc:  # noqa: BLE001
+                # An assessor crash must not roll back the evaluation — the
+                # every-decision-recorded guarantee outranks it. Fail closed:
+                # an unassessable token is not a copyable token.
+                log.exception("risk_assessor_failed", mint=token.mint)
+                rug_verdict = RiskVerdict(
+                    mint=token.mint,
+                    score=100.0,
+                    hard_blocked=True,
+                    blocked_reasons=[f"assessment_error: {exc}"],
+                )
             factors.append(rug_verdict.as_factor())
         if not settings.rug_check_enabled:
             rug_note = "rug check disabled by config"

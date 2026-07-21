@@ -21,6 +21,7 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
@@ -124,7 +125,9 @@ class TokenRiskEngine:
             token_id=token.id,
             mint=token.mint,
             ts=datetime.now(UTC),
-            score=score,
+            # asyncpg rejects bare floats for NUMERIC binds; str() first so
+            # the Decimal is exact-at-display rather than binary-noise.
+            score=Decimal(str(round(score, 6))),
             hard_blocked=bool(blocked_reasons),
             blocked_reasons=blocked_reasons,
             components={

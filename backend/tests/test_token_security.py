@@ -47,15 +47,17 @@ class FakeRpc:
         if key in self.fail:
             raise RuntimeError(f"rpc down: {key}")
 
-    async def get_account_info(self, pubkey: str, encoding: str = "base64") -> dict | None:
+    async def get_account_info(
+        self, pubkey: str, encoding: str = "base64", budget_exempt: bool | None = None
+    ) -> dict | None:
         self._check(f"account:{pubkey}")
         return self.accounts.get(pubkey)
 
-    async def get_token_supply(self, mint: str) -> dict | None:
+    async def get_token_supply(self, mint: str, budget_exempt: bool | None = None) -> dict | None:
         self._check(f"supply:{mint}")
         return self.supplies.get(mint)
 
-    async def get_token_largest_accounts(self, mint: str) -> list[dict]:
+    async def get_token_largest_accounts(self, mint: str, budget_exempt: bool | None = None) -> list[dict]:
         self._check(f"largest:{mint}")
         return self.largest.get(mint, [])
 
