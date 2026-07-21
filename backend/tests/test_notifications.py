@@ -85,7 +85,18 @@ async def test_recent_skips_malformed(fake_redis: FakeRedis) -> None:
 def test_all_kinds_present() -> None:
     assert "copied_buy" in NOTIFICATION_KINDS
     assert "emergency_stop" in NOTIFICATION_KINDS
-    assert len(NOTIFICATION_KINDS) == 11
+    assert "risk_blocked" in NOTIFICATION_KINDS
+    assert len(NOTIFICATION_KINDS) == 12
+
+
+def test_builder_risk_blocked() -> None:
+    n = Notification.risk_blocked("MintABC", 87.4, ["mint_authority_active"])
+    assert n.kind == "risk_blocked"
+    assert n.severity == "warning"
+    assert n.data["score"] == 87.4
+    assert "mint_authority_active" in n.body
+    empty = Notification.risk_blocked("MintABC", 61.0, [])
+    assert "threshold" in empty.body
 
 
 def test_builder_copied_buy() -> None:

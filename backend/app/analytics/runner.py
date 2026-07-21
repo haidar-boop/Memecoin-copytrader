@@ -22,7 +22,9 @@ __all__ = ["run_analytics_loop"]
 
 
 def _build_job_specs(
-    settings: Settings, session_factory: async_sessionmaker[AsyncSession]
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: object | None = None,
 ) -> list[JobSpec]:
     async def wallet_stats_cycle() -> None:
         from app.analytics import wallet_metrics
@@ -65,16 +67,37 @@ def _build_job_specs(
             result = await train.retrain_once(session, settings, now=datetime.now(tz=UTC))
             log.info("ml_retrain_result", **{str(k): str(v) for k, v in (result or {}).items()})
 
+    async def risk_learning_cycle() -> None:
+        from app.analytics import risk_learning
+
+        async with session_factory() as session:
+            labeled = await risk_learning.resolve_outcomes(
+                session, settings, now=datetime.now(tz=UTC)
+            )
+            await session.commit()
+        log.info("risk_outcomes_resolved", labeled=labeled)
+        if settings.rug_learning_enabled and redis is not None:
+            async with session_factory() as session:
+                weights = await risk_learning.tune_weights(
+                    session, redis, settings, now=datetime.now(tz=UTC)
+                )
+                await session.commit()
+            if weights:
+                log.info("risk_weights_tuned", weights=weights)
+
     return [
         ("wallet_stats", float(settings.wallet_stats_interval_seconds), wallet_stats_cycle),
         ("strategy", float(settings.strategy_interval_seconds), strategy_cycle),
         ("patterns", float(settings.patterns_interval_seconds), patterns_cycle),
         ("ml_retrain", float(settings.ml_retrain_interval_seconds), retrain_cycle),
+        ("risk_learning", float(settings.rug_learning_interval_seconds), risk_learning_cycle),
     ]
 
 
 async def run_analytics_loop(
-    settings: Settings, session_factory: async_sessionmaker[AsyncSession]
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: object | None = None,
 ) -> None:
     """Start every periodic analytics job; returns cleanly on cancellation."""
-    await run_jobs("analytics", _build_job_specs(settings, session_factory))
+    await run_jobs("analytics", _build_job_specs(settings, session_factory, redis))

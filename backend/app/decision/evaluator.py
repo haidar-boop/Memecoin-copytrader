@@ -17,6 +17,7 @@ Scoring:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -31,6 +32,7 @@ from app.config import Settings
 from app.db.models import Token, TokenSnapshot, TradeDecision, Wallet, WalletStats
 from app.db.util import aware, to_decimal, to_float
 from app.decision import ranking, sizing
+from app.decision.risk_contracts import RiskVerdict
 from app.decision.safety import SafetyGuard
 from app.logging_config import get_logger
 
@@ -93,11 +95,23 @@ async def _latest_snapshots(
     )
 
 
+RiskAssessor = Callable[[AsyncSession, Token], Awaitable[RiskVerdict]]
+
+
 class Evaluator:
-    def __init__(self, settings: Settings, redis: Any, guard: SafetyGuard):
+    def __init__(
+        self,
+        settings: Settings,
+        redis: Any,
+        guard: SafetyGuard,
+        risk_assessor: RiskAssessor | None = None,
+    ):
         self._settings = settings
         self._redis = redis
         self._guard = guard
+        # Pre-copy structural rug assessment (wired by the copytrader worker,
+        # which owns the RPC client). None = evaluation-only context.
+        self._risk_assessor = risk_assessor
 
     async def evaluate_buy(self, session: AsyncSession, event: LeaderBuy) -> Evaluation:
         settings = self._settings
@@ -284,6 +298,20 @@ class Evaluator:
         )
         safety_blocks = await self._guard.gate_reasons(session, event.token_mint)
 
+        # --- pre-copy rug-risk assessment ---------------------------------
+        rug_verdict: RiskVerdict | None = None
+        if settings.rug_check_enabled and self._risk_assessor is not None:
+            rug_verdict = await self._risk_assessor(session, token)
+            factors.append(rug_verdict.as_factor())
+        if not settings.rug_check_enabled:
+            rug_note = "rug check disabled by config"
+        elif rug_verdict is None:
+            rug_note = "no assessor in this context; gate inactive"
+        elif rug_verdict.hard_blocked:
+            rug_note = "HARD BLOCK: " + "; ".join(rug_verdict.blocked_reasons)
+        else:
+            rug_note = f"score {rug_verdict.score:.1f} vs max {settings.rug_max_score}"
+
         checks = [
             gate("copy_enabled", settings.copy_enabled, "master switch"),
             gate(
@@ -302,6 +330,15 @@ class Evaluator:
                 "token_not_blacklisted",
                 event.token_mint not in settings.copy_token_blacklist,
                 "token blacklist",
+            ),
+            gate(
+                "token_rug_risk",
+                rug_verdict is None
+                or (
+                    not rug_verdict.hard_blocked
+                    and rug_verdict.score <= settings.rug_max_score
+                ),
+                rug_note,
             ),
             gate(
                 "confidence_threshold",

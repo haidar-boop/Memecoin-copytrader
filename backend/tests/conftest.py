@@ -36,6 +36,8 @@ class StubRedis:
 
     def __init__(self) -> None:
         self.data: dict[str, str] = {}
+        self.published: list[tuple[str, str]] = []
+        self.lists: dict[str, list[str]] = {}
 
     async def get(self, key: str) -> str | None:
         return self.data.get(key)
@@ -61,6 +63,21 @@ class StubRedis:
         value = int(self.data.get(key, "0")) + int(amount)
         self.data[key] = str(value)
         return value
+
+    async def publish(self, channel: str, message: str) -> int:
+        self.published.append((channel, message))
+        return 1
+
+    async def lpush(self, key: str, *values: str) -> int:
+        bucket = self.lists.setdefault(key, [])
+        for value in values:
+            bucket.insert(0, value)
+        return len(bucket)
+
+    async def ltrim(self, key: str, start: int, stop: int) -> bool:
+        bucket = self.lists.get(key, [])
+        self.lists[key] = bucket[start : stop + 1]
+        return True
 
 
 @pytest.fixture

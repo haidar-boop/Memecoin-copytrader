@@ -152,6 +152,26 @@ class Settings(BaseSettings):
     # approvals). Unset = endpoints refuse in anything but dev.
     admin_token: str | None = None
 
+    # --- token rug-risk engine --------------------------------------------
+    # Pre-copy structural risk assessment. Hard filters (active mint/freeze
+    # authority, extreme holder concentration) block regardless of score and
+    # are never subject to learned weighting.
+    rug_check_enabled: bool = True
+    rug_max_score: float = 60.0
+    rug_block_mint_authority: bool = True
+    rug_block_freeze_authority: bool = True
+    rug_block_top10_pct: float = 0.70  # hard block above this supply share
+    # Treat probe-unknown authorities as blocking (fail closed) or only as
+    # elevated component risk (fail open). Closed is the safe default.
+    rug_fail_closed: bool = True
+    # Reuse a recent assessment instead of re-probing on every leader buy.
+    rug_assessment_ttl_seconds: int = 600
+    # Learning loop: label outcomes and tune soft weights within bounds.
+    rug_learning_enabled: bool = True
+    rug_learning_interval_seconds: int = 21_600
+    rug_outcome_min_age_hours: int = 12
+    rug_learning_min_samples: int = 50
+
     # --- api ---------------------------------------------------------------
     api_host: str = "0.0.0.0"
     api_port: int = 8000

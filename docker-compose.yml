@@ -7,6 +7,9 @@ x-backend-env: &backend-env
   SOLANA_WS_URL: ${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
   RPC_REQUESTS_PER_SECOND: ${RPC_REQUESTS_PER_SECOND:-8}
   RPC_DAILY_CREDIT_BUDGET: ${RPC_DAILY_CREDIT_BUDGET:-0}
+  RUG_CHECK_ENABLED: ${RUG_CHECK_ENABLED:-true}
+  RUG_MAX_SCORE: ${RUG_MAX_SCORE:-60}
+  RUG_FAIL_CLOSED: ${RUG_FAIL_CLOSED:-true}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 x-backend-service: &backend-service

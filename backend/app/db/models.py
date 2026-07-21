@@ -78,6 +78,11 @@ class Token(Base):
     creator: Mapped[str | None] = mapped_column(String(64))
     metadata_uri: Mapped[str | None] = mapped_column(Text)
     primary_dex: Mapped[str | None] = mapped_column(String(32))
+    # On-chain security facts (rug-risk probe). None = never checked;
+    # empty string = confirmed renounced; else the authority pubkey.
+    mint_authority: Mapped[str | None] = mapped_column(String(64))
+    freeze_authority: Mapped[str | None] = mapped_column(String(64))
+    security_checked_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     # Earliest activity we have observed for the token — proxy for token age.
     first_seen_at: Mapped[datetime] = mapped_column(TZDateTime, index=True)
     metadata_updated_at: Mapped[datetime | None] = mapped_column(TZDateTime)
@@ -703,6 +708,57 @@ class Report(Base):
     markdown: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (Index("ix_reports_kind_generated", "kind", "generated_at"),)
+
+
+class TokenRiskAssessment(Base):
+    """One rug-risk evaluation of a token at a moment in time. Append-only.
+
+    ``components``/``signals`` preserve the full evidence trail; ``outcome``
+    is filled in later by the risk-learning loop once the token's fate is
+    observable (rug / loss / profit), closing the loop for weight tuning.
+    """
+
+    __tablename__ = "token_risk_assessments"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id"), index=True)
+    mint: Mapped[str] = mapped_column(String(64), index=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    score: Mapped[Decimal] = mapped_column(Amount)
+    hard_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    blocked_reasons: Mapped[list | None] = mapped_column(JSONVariant)
+    components: Mapped[dict | None] = mapped_column(JSONVariant)
+    signals: Mapped[dict | None] = mapped_column(JSONVariant)
+    engine_version: Mapped[str] = mapped_column(String(16))
+    weights_version: Mapped[int] = mapped_column(Integer, default=0)
+    # Filled by the learning loop: rug | loss | profit | unknown.
+    outcome: Mapped[str | None] = mapped_column(String(16), index=True)
+    outcome_roi: Mapped[Decimal | None] = mapped_column(Amount)
+    outcome_resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=UTC_NOW)
+
+    __table_args__ = (
+        Index("ix_risk_assessments_token_ts", "token_id", "ts"),
+    )
+
+
+class RiskWeightSnapshot(Base):
+    """A learned soft-component weight set for the risk engine. Append-only.
+
+    The newest row is the active set (mirrored to Redis for cheap reads).
+    Weights only ever rescale BASE_WEIGHTS within contract bounds — hard
+    filters are not represented here and cannot be influenced by learning.
+    """
+
+    __tablename__ = "risk_weight_snapshots"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    version: Mapped[int] = mapped_column(Integer, index=True)
+    weights: Mapped[dict] = mapped_column(JSONVariant)
+    sample_count: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[dict | None] = mapped_column(JSONVariant)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=UTC_NOW)
 
 
 # Phase 4 has no hypertables (all rows are periodic aggregates, low volume).

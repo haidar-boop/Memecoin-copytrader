@@ -37,6 +37,7 @@ NOTIFICATION_KINDS: tuple[str, ...] = (
     "large_market_move",
     "system_error",
     "emergency_stop",
+    "risk_blocked",
 )
 
 
@@ -85,6 +86,19 @@ class Notification(BaseModel):
             body=f"Trading halted: {reason}",
             severity="critical",
             data={"reason": reason},
+        )
+
+    @classmethod
+    def risk_blocked(
+        cls, token_mint: str, score: float, reasons: list[str]
+    ) -> Notification:
+        detail = "; ".join(reasons) if reasons else "risk score above threshold"
+        return cls(
+            kind="risk_blocked",
+            title="Copy blocked by rug risk",
+            body=f"Skipped {token_mint}: risk {score:.0f} ({detail})",
+            severity="warning",
+            data={"token_mint": token_mint, "score": score, "reasons": reasons},
         )
 
     @classmethod
@@ -141,6 +155,7 @@ class Notification(BaseModel):
 copied_buy = Notification.copied_buy
 copied_sell = Notification.copied_sell
 emergency_stop = Notification.emergency_stop
+risk_blocked = Notification.risk_blocked
 large_market_move = Notification.large_market_move
 report_ready = Notification.report_ready
 high_confidence_wallet = Notification.high_confidence_wallet

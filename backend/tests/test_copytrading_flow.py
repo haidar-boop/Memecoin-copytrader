@@ -14,6 +14,7 @@ from app.db.models import (
     CopyPosition,
     CopyTrade,
     Token,
+    TokenRiskAssessment,
     TokenSnapshot,
     TradeDecision,
     Wallet,
@@ -41,6 +42,9 @@ def make_settings(**overrides) -> Settings:
         copy_min_market_cap_usd=1000.0,
         copy_fixed_sol=0.1,
         ml_model_dir="/nonexistent",  # no active model -> weight redistributes
+        # These tests run without an RPC client, so the rug probe can only
+        # report unknowns; disable the gate except where a test targets it.
+        rug_check_enabled=False,
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -237,3 +241,29 @@ async def test_stranger_sell_does_not_close_position(
     db_session.expire_all()
     position = (await db_session.execute(select(CopyPosition))).scalar_one()
     assert position.status == "closed"
+
+
+async def test_rug_gate_blocks_and_notifies(
+    db_session: AsyncSession, stub_redis: StubRedis
+) -> None:
+    """With no RPC the probe reports unknown authorities; fail-closed must
+    hard-block the copy and emit exactly one risk_blocked notification."""
+    await seed_market(db_session)
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    trader = make_trader(
+        factory, stub_redis, make_settings(rug_check_enabled=True, rug_fail_closed=True)
+    )
+
+    evaluation = await trader.handle_message(buy_message())
+    assert evaluation is not None and evaluation.decision == "skip"
+    rug = next(r for r in evaluation.reasons if r["gate"] == "token_rug_risk")
+    assert rug["passed"] is False
+    assert "HARD BLOCK" in rug["note"]
+
+    kinds = [json.loads(m)["kind"] for _, m in stub_redis.published]
+    assert kinds.count("risk_blocked") == 1
+
+    assessment = (
+        await db_session.execute(select(TokenRiskAssessment))
+    ).scalars().first()
+    assert assessment is not None and assessment.hard_blocked is True

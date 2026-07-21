@@ -21,9 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import Settings
 from app.decision.evaluator import Evaluation, Evaluator, LeaderBuy
 from app.decision.safety import SafetyGuard
+from app.decision.token_risk import TokenRiskEngine
+from app.enrichment.token_security import TokenSecurityProbe
 from app.execution.executor import CopyExecutor
 from app.ingestion.programs import WSOL_MINT
 from app.logging_config import get_logger
+from app.services.notifications import Notification, NotificationService
 from app.services.redis import TRADES_CHANNEL
 from app.services.rpc import SolanaRpc
 
@@ -62,7 +65,20 @@ class CopyTrader:
         self._redis = redis
         self._session_factory = session_factory
         self._guard = SafetyGuard(settings, redis)
-        self._evaluator = Evaluator(settings, redis, self._guard)
+        self._notifier = NotificationService(redis)
+
+        # Pre-copy rug assessment: probe fetches on-chain facts through the
+        # budgeted RPC client; the engine scores and persists. Wired as a
+        # closure so the Evaluator stays free of RPC concerns.
+        probe = TokenSecurityProbe(rpc, settings)
+        engine = TokenRiskEngine(settings, redis)
+
+        async def _assess(session: AsyncSession, token) -> Any:
+            return await engine.assess(
+                session, token, lambda: probe.probe(session, token)
+            )
+
+        self._evaluator = Evaluator(settings, redis, self._guard, risk_assessor=_assess)
         self._executor = CopyExecutor(settings, redis, rpc, self._guard)
 
     async def run(self) -> None:
@@ -114,11 +130,52 @@ class CopyTrader:
             async with session.begin():
                 evaluation = await self._evaluator.evaluate_buy(session, event)
         if evaluation.decision != "copy":
+            await self._notify_if_rug_blocked(event, evaluation)
             return evaluation
         async with self._session_factory() as session:
             async with session.begin():
                 await self._executor.execute_buy(session, event, evaluation)
         return evaluation
+
+    async def _notify_if_rug_blocked(
+        self, event: LeaderBuy, evaluation: Evaluation
+    ) -> None:
+        """Surface skips caused specifically by the rug gate.
+
+        Only fires when every OTHER gate passed — a rug warning on a trade
+        that was going to be skipped anyway (copy disabled, blacklist...)
+        would be pure noise.
+        """
+        rug_failed = False
+        others_passed = True
+        for reason in evaluation.reasons:
+            failed = not reason.get("passed", True)
+            if reason.get("gate") == "token_rug_risk":
+                rug_failed = failed
+            elif failed:
+                others_passed = False
+        if not (rug_failed and others_passed):
+            return
+        blocked = [
+            str(r)
+            for factor in evaluation.factors or []
+            if factor.get("factor") == "token_rug_risk"
+            for r in (factor.get("note") or {}).get("blocked_reasons", [])
+        ]
+        rug_score = next(
+            (
+                float(f.get("value") or 0.0)
+                for f in evaluation.factors or []
+                if f.get("factor") == "token_rug_risk"
+            ),
+            0.0,
+        )
+        try:
+            await self._notifier.emit(
+                Notification.risk_blocked(event.token_mint, rug_score, blocked)
+            )
+        except Exception:  # noqa: BLE001 - notification failure must not break the loop
+            log.exception("risk_blocked_notify_failed")
 
     async def _resolve_wallet_id(self, session, address: str) -> int | None:
         from sqlalchemy import select
