@@ -103,6 +103,13 @@ services:
     volumes:
       - mlmodels:/srv/backend/models
 
+  evaluation:
+    <<: *backend-service
+    environment:
+      <<: *backend-env
+      METRICS_PORT: "9106"
+    command: ["python", "-m", "workers.run_evaluation"]
+
   copytrader:
     <<: *backend-service
     environment:

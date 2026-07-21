@@ -143,8 +143,32 @@ gated), and admin-token-gated `resume` / `approvals/{id}`.
 > Live trading requires `COPY_MODE=live` **and** `TRADING_WALLET_SECRET` for
 > a dedicated wallet — never a main wallet.
 
+## Phase 4 — Optimization & Continuous Learning
+
+The `evaluation` worker closes the learning loop:
+
+- **Prediction evaluation** (`app/evaluation/prediction_eval.py`): resolves
+  every stored prediction against the position it referenced, records
+  predicted-vs-actual (label, ROI, hold time) and per-prediction Brier
+  error, then computes rolling per-model AUC / Brier / accuracy /
+  base-rate and a **calibration curve** — the honest accuracy the retraining
+  gate and the reports draw on.
+- **Market regime detection** (`app/evaluation/regime.py`): labels each
+  window bull / bear / sideways with modifier flags (high volatility, low
+  liquidity, whale accumulation, panic selling, launch wave, trend
+  exhaustion), each from a documented rule with its numbers stored.
+- **Regime × strategy** (`app/evaluation/regime_strategy.py`): which trading
+  styles perform best under which market conditions, over a trailing window.
+- **AI reports** (`app/evaluation/reports.py`): daily/weekly reports — best
+  and worst wallets, rising and declining strategies, highest-risk and
+  most-consistent wallets, model prediction accuracy, biggest mistakes and
+  improvements, and a market summary — as structured JSON plus rendered
+  markdown, **every conclusion carrying its supporting numbers**.
+
+Endpoints: `/api/reports` (+`/latest`), `/api/evaluation/models`,
+`/api/evaluation/regimes`, `/api/evaluation/regime-strategies`.
+
 ## Roadmap
-- **Phase 4**: continuous self-evaluation & market regime learning
 - **Phase 5**: production platform (Next.js dashboard, auth, Telegram,
   WebSocket feeds)
 

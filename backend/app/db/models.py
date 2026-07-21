@@ -581,3 +581,128 @@ class CopyPosition(Base):
             sqlite_where=text("status = 'open'"),
         ),
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 4: optimization & continuous learning (migration 0004)
+# --------------------------------------------------------------------------
+
+
+class PredictionOutcome(Base):
+    """Resolved prediction: what the model said vs what actually happened.
+
+    Joins a Prediction to the realized outcome of the position it referenced,
+    so the evaluation engine can score calibration and error over time. Kept
+    forever; one row per resolved prediction.
+    """
+
+    __tablename__ = "prediction_outcomes"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    prediction_id: Mapped[int] = mapped_column(ForeignKey("predictions.id"), index=True)
+    model_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    resolved_at: Mapped[datetime] = mapped_column(TZDateTime)
+    subject_type: Mapped[str] = mapped_column(String(16))  # trade | wallet
+    # Predicted probability / value taken from the Prediction row.
+    predicted_prob: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    predicted_roi: Mapped[Decimal | None] = mapped_column(Amount)
+    predicted_hold_seconds: Mapped[int | None] = mapped_column(BigInteger)
+    # Realized outcome.
+    actual_label: Mapped[int | None] = mapped_column(Integer)  # 1 profitable else 0
+    actual_roi: Mapped[Decimal | None] = mapped_column(Amount)
+    actual_hold_seconds: Mapped[int | None] = mapped_column(BigInteger)
+    # Errors (actual - predicted); brier for the classifier.
+    roi_error: Mapped[Decimal | None] = mapped_column(Amount)
+    hold_error_seconds: Mapped[int | None] = mapped_column(BigInteger)
+    brier: Mapped[Decimal | None] = mapped_column(Numeric(10, 8))
+
+    __table_args__ = (
+        UniqueConstraint("prediction_id", name="uq_prediction_outcomes_prediction"),
+        Index("ix_prediction_outcomes_model_resolved", "model_id", "resolved_at"),
+    )
+
+
+class ModelPerformance(Base):
+    """Rolling accuracy metrics per model over an evaluation window. Append-only."""
+
+    __tablename__ = "model_performance"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime)
+    model_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    model_name: Mapped[str] = mapped_column(String(64))
+    window_days: Mapped[int] = mapped_column(Integer)
+    resolved_count: Mapped[int] = mapped_column(Integer)
+    auc: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    brier: Mapped[Decimal | None] = mapped_column(Numeric(10, 8))
+    accuracy: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    base_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    mean_roi_error: Mapped[Decimal | None] = mapped_column(Amount)
+    # Calibration bins: [{p_bin, predicted, observed, n}].
+    calibration: Mapped[list | None] = mapped_column(JSONVariant)
+
+    __table_args__ = (Index("ix_model_performance_name_ts", "model_name", "ts"),)
+
+
+class MarketRegime(Base):
+    """A detected market-condition label over a time window. Append-only."""
+
+    __tablename__ = "market_regimes"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    window_minutes: Mapped[int] = mapped_column(Integer)
+    # Primary label: bull | bear | sideways plus modifier flags below.
+    regime: Mapped[str] = mapped_column(String(24))
+    high_volatility: Mapped[bool] = mapped_column(Boolean, default=False)
+    low_liquidity: Mapped[bool] = mapped_column(Boolean, default=False)
+    whale_accumulation: Mapped[bool] = mapped_column(Boolean, default=False)
+    panic_selling: Mapped[bool] = mapped_column(Boolean, default=False)
+    launch_wave: Mapped[bool] = mapped_column(Boolean, default=False)
+    trend_exhaustion: Mapped[bool] = mapped_column(Boolean, default=False)
+    features: Mapped[dict | None] = mapped_column(JSONVariant)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_market_regimes_regime_ts", "regime", "ts"),)
+
+
+class RegimeStrategyStat(Base):
+    """Per-(regime, strategy) performance: which styles win in which conditions."""
+
+    __tablename__ = "regime_strategy_stats"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime)
+    regime: Mapped[str] = mapped_column(String(24))
+    style: Mapped[str] = mapped_column(String(32))
+    window_days: Mapped[int] = mapped_column(Integer)
+    closed_positions: Mapped[int] = mapped_column(Integer)
+    win_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    avg_roi: Mapped[Decimal | None] = mapped_column(Amount)
+    total_pnl_sol: Mapped[Decimal | None] = mapped_column(Amount)
+
+    __table_args__ = (Index("ix_regime_strategy_regime_style_ts", "regime", "style", "ts"),)
+
+
+class Report(Base):
+    """A generated AI report (weekly/daily) as structured JSON + rendered text.
+
+    Every conclusion in ``sections`` carries its supporting numbers, so the
+    report explains its own reasoning. Append-only.
+    """
+
+    __tablename__ = "reports"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(24))  # daily | weekly
+    generated_at: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    window_start: Mapped[datetime] = mapped_column(TZDateTime)
+    window_end: Mapped[datetime] = mapped_column(TZDateTime)
+    summary: Mapped[str | None] = mapped_column(Text)
+    sections: Mapped[dict | None] = mapped_column(JSONVariant)
+    markdown: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_reports_kind_generated", "kind", "generated_at"),)
+
+
+# Phase 4 has no hypertables (all rows are periodic aggregates, low volume).

@@ -92,6 +92,21 @@ class Settings(BaseSettings):
     ml_label_horizon_hours: int = 24
     ml_model_dir: str = "./models"
 
+    # --- optimization & learning (Phase 4) ---------------------------------
+    evaluation_interval_seconds: int = 900
+    regime_interval_seconds: int = 900
+    report_interval_seconds: int = 86400
+    # A prediction is resolvable once the referenced position has closed (or
+    # the label horizon has elapsed for a still-open position).
+    eval_resolve_batch: int = 1000
+    eval_window_days: int = 30
+    eval_min_resolved: int = 20  # min resolved predictions to publish metrics
+    eval_calibration_bins: int = 10
+    regime_window_minutes: int = 60
+    regime_lookback_windows: int = 24  # windows compared for trend detection
+    report_wallet_top_n: int = 10
+    regime_strategy_window_days: int = 30
+
     # --- copy trading (Phase 3) --------------------------------------------
     # Master switch. Even when enabled, mode defaults to paper: live trading
     # additionally requires copy_mode="live" AND a funded keypair.
