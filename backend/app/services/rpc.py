@@ -68,6 +68,35 @@ class RpcBudget:
             log.warning("rpc_budget_redis_unavailable", error=str(exc))
             return None
 
+    async def _notify_exhausted_once(self, used: int) -> None:
+        """Tell the operator (Telegram/dashboard) the day's budget is spent.
+
+        A Redis NX marker makes this fire once per UTC day across ALL
+        processes — every worker hits the wall at roughly the same moment,
+        and one alert is signal while eight are noise.
+        """
+        try:
+            marker_key = "rpc:budget_notified:" + datetime.now(UTC).strftime("%Y-%m-%d")
+            if not await self._redis.set(marker_key, "1", nx=True, ex=self.KEY_TTL_SECONDS):
+                return
+            from app.services.notifications import Notification, NotificationService
+
+            await NotificationService(self._redis).emit(
+                Notification(
+                    kind="system_error",
+                    title="RPC daily budget exhausted",
+                    body=(
+                        f"Daily RPC credit budget ({self._limit:,}) is spent. "
+                        "Ingestion and enrichment pause until the next UTC day; "
+                        "live-execution calls remain unaffected."
+                    ),
+                    severity="warning",
+                    data={"used": used, "limit": self._limit},
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - alerting must never block RPC flow
+            log.warning("rpc_budget_notify_failed", error=str(exc))
+
     async def acquire(self, exempt: bool = False) -> None:
         if self._limit <= 0:
             return
@@ -77,6 +106,7 @@ class RpcBudget:
         metrics.RPC_BUDGET_USED.set(used)
         if used <= self._limit or exempt:
             return
+        await self._notify_exhausted_once(used)
         while True:
             now = time.monotonic()
             if now - self._last_warn >= self.WARN_EVERY_SECONDS:

@@ -86,3 +86,52 @@ def test_execution_critical_methods_are_exempt() -> None:
     assert "sendTransaction" in BUDGET_EXEMPT_METHODS
     assert "simulateTransaction" in BUDGET_EXEMPT_METHODS
     assert "getTransaction" not in BUDGET_EXEMPT_METHODS
+
+
+class FakeNotifyRedis(FakeRedis):
+    """FakeRedis + the notification/list surface the exhaustion alert uses."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kv: dict[str, str] = {}
+        self.published: list[tuple[str, str]] = []
+        self.lists: dict[str, list[str]] = {}
+
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        if nx and key in self.kv:
+            return None
+        self.kv[key] = value
+        return True
+
+    async def publish(self, channel: str, message: str) -> int:
+        self.published.append((channel, message))
+        return 1
+
+    async def lpush(self, key: str, *values: str) -> int:
+        bucket = self.lists.setdefault(key, [])
+        for value in values:
+            bucket.insert(0, value)
+        return len(bucket)
+
+    async def ltrim(self, key: str, start: int, stop: int) -> bool:
+        return True
+
+
+async def test_exhaustion_notifies_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis = FakeNotifyRedis()
+    budget = RpcBudget(redis, 1)
+
+    async def fake_sleep(seconds: float) -> None:
+        redis.counters.clear()  # day rolls over, loop exits
+
+    monkeypatch.setattr("app.services.rpc.asyncio.sleep", fake_sleep)
+    await budget.acquire()
+    await budget.acquire()  # first over-limit call -> notify + block + resume
+    assert len(redis.published) == 1
+    redis.counters[next(iter(redis.kv), "x")] = 0  # keep counter state simple
+    # A second exhaustion the same day must NOT notify again (NX marker).
+    for _ in range(2):
+        await budget.acquire()
+    assert len(redis.published) == 1
