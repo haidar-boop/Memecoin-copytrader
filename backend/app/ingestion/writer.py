@@ -184,6 +184,14 @@ async def insert_trade(
             price_usd = event.price_quote_per_token * sol_price_usd
         elif event.quote_mint in STABLE_MINTS:
             price_usd = event.price_quote_per_token
+    # Token-to-token legs quote in the OTHER token's units; storing that as
+    # price_quote poisons any stat that averages prices for the token. Only
+    # SOL/stable quotes are prices.
+    price_quote = (
+        event.price_quote_per_token
+        if event.quote_mint == WSOL_MINT or event.quote_mint in STABLE_MINTS
+        else None
+    )
     values = {
         "signature": event.signature,
         "event_index": event.event_index,
@@ -198,7 +206,7 @@ async def insert_trade(
         "token_amount": event.token_amount,
         "quote_amount": event.quote_amount,
         "quote_mint": event.quote_mint,
-        "price_quote": event.price_quote_per_token,
+        "price_quote": price_quote,
         "price_usd": price_usd,
         "sol_price_usd": sol_price_usd,
         "program_id": event.program_id,

@@ -121,6 +121,16 @@ class CopyExecutor:
         decimals = token.decimals if token and token.decimals is not None else 9
         lamports = int(trade.size_sol * LAMPORTS_PER_SOL)
 
+        # Evaluation and execution run in separate transactions; the safety
+        # picture (emergency stop, daily loss, exposure) may have changed in
+        # between. Re-check at the last responsible moment, before anything
+        # irreversible.
+        blocked = await self._guard.gate_reasons(session, token_mint)
+        if blocked:
+            return await self._fail(
+                session, trade, "safety rails at execution: " + "; ".join(blocked)
+            )
+
         for attempt in range(1, self._settings.copy_execution_attempts + 1):
             trade.attempts = attempt
             quote = await self._jupiter.quote(
@@ -238,6 +248,9 @@ class CopyExecutor:
             if outcome != "confirmed":
                 # Leave the position OPEN so the sell can be retried on the
                 # next signal; never book a fabricated close on a failed sell.
+                # Release the dedup lock, or the promised retry is locked out
+                # until the TTL expires and the next signal no-ops.
+                await self._redis.delete(f"copy:lock:{token_mint}:sell")
                 return trade
             proceeds = jupiter.sol_proceeds_from_quote(trade.quote or {}) or proceeds
 
@@ -285,7 +298,8 @@ class CopyExecutor:
         trade.status = "confirmed"
         trade.updated_at = datetime.now(tz=UTC)
         await self._open_position(session, trade, token_amount)
-        await self._guard.record_execution_result(True)
+        # Paper fills never touch the chain, so they say nothing about live
+        # execution health — do not let them clear a live failure streak.
         await self._guard.start_cooldown(token_mint)
         await self._notify(
             Notification.copied_buy(
@@ -337,7 +351,18 @@ class CopyExecutor:
         trade.status = "submitted"
 
         if not await self._confirm(signature):
-            # Broadcast but unconfirmed: caller must stop (no retry).
+            # Broadcast but unconfirmed: caller must stop (no retry). For a
+            # live buy, STILL open a position from the quote's expected fill:
+            # if the tx lands after our timeout the SOL is spent, and an
+            # untracked position can never be mirror-sold — an orphaned real
+            # position is strictly worse than a phantom one the next sell
+            # signal closes at market value.
+            if is_live_buy:
+                fill = jupiter.buy_fill_from_quote(quote, decimals)
+                if fill is not None:
+                    trade.filled_token_amount, trade.filled_price_sol = fill
+                    trade.error = "confirm timeout; position opened from quote estimate"
+                    await self._open_position(session, trade, fill[0])
             return "submitted"
         if is_live_buy:
             fill = jupiter.buy_fill_from_quote(quote, decimals)
@@ -352,7 +377,11 @@ class CopyExecutor:
             await self._open_position(session, trade, fill[0])
         trade.status = "confirmed"
         trade.updated_at = datetime.now(tz=UTC)
-        await self._guard.record_execution_result(True)
+        # The streak gates live BUYS; only a live buy success clears it —
+        # a sell (or paper activity) succeeding says nothing about whether
+        # buys keep failing.
+        if is_live_buy:
+            await self._guard.record_execution_result(True)
         return "confirmed"
 
     def _simulation_ok(self, simulation: dict | None, trade: CopyTrade) -> bool:

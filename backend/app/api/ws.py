@@ -83,13 +83,23 @@ async def live(websocket: WebSocket, token: str | None = Query(default=None)) ->
     await pubsub.subscribe(TRADES_CHANNEL, NOTIFICATIONS_CHANNEL)
 
     async def reader() -> None:
-        async for message in pubsub.listen():
-            if message is None or message.get("type") != "message":
-                continue
-            channel = message.get("channel")
-            if isinstance(channel, (bytes, bytearray)):
-                channel = channel.decode("utf-8", errors="replace")
-            await websocket.send_json(frame_message(channel, message.get("data")))
+        try:
+            async for message in pubsub.listen():
+                if message is None or message.get("type") != "message":
+                    continue
+                channel = message.get("channel")
+                if isinstance(channel, (bytes, bytearray)):
+                    channel = channel.decode("utf-8", errors="replace")
+                await websocket.send_json(frame_message(channel, message.get("data")))
+        except Exception:  # noqa: BLE001
+            # Redis dropped: close the socket instead of leaving the client
+            # attached to a feed that will never speak again — the frontend
+            # reconnects and gets a fresh subscription.
+            log.info("ws_reader_lost_redis_closing_client")
+            try:
+                await websocket.close(code=1011)
+            except Exception:  # noqa: BLE001
+                pass
 
     reader_task = asyncio.create_task(reader())
     try:

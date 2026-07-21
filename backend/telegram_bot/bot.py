@@ -91,27 +91,43 @@ class TelegramNotifier:
             return
 
         send = await self._ensure_send()
-        pubsub = self._redis.pubsub()
-        await pubsub.subscribe(NOTIFICATIONS_CHANNEL)
-        try:
-            async for message in pubsub.listen():
-                if not message or message.get("type") != "message":
-                    continue
-                payload = _decode(message.get("data"))
-                if payload is None:
-                    continue
-                if not self._allowed(str(payload.get("kind", ""))):
-                    continue
-                try:
-                    await send(chat_id, notification_to_text(payload))
-                except Exception as exc:  # noqa: BLE001
-                    log.error("telegram_send_failed", error=str(exc))
-        finally:
+        backoff = 1.0
+        while True:
+            # Reconnect on Redis loss — pubsub.listen() raises and never
+            # resubscribes by itself; without this loop the forwarder dies
+            # silently at the first blip.
+            pubsub = self._redis.pubsub()
             try:
-                await pubsub.unsubscribe(NOTIFICATIONS_CHANNEL)
-                await pubsub.close()
-            except Exception:  # noqa: BLE001
-                pass
+                await pubsub.subscribe(NOTIFICATIONS_CHANNEL)
+                backoff = 1.0
+                async for message in pubsub.listen():
+                    if not message or message.get("type") != "message":
+                        continue
+                    payload = _decode(message.get("data"))
+                    if payload is None:
+                        continue
+                    if not self._allowed(str(payload.get("kind", ""))):
+                        continue
+                    try:
+                        await send(chat_id, notification_to_text(payload))
+                    except Exception as exc:  # noqa: BLE001
+                        log.error("telegram_send_failed", error=str(exc))
+                # Clean end of listen() = deliberate close (shutdown, tests);
+                # a dead connection raises instead. Only errors reconnect.
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reconnect on transport errors
+                log.warning("telegram_feed_disconnected", error=str(exc),
+                            retry_in=backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+            finally:
+                try:
+                    await pubsub.unsubscribe(NOTIFICATIONS_CHANNEL)
+                    await pubsub.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # -- command payload builders (DB-backed, reused by handlers) ----------
 

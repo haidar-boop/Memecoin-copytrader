@@ -96,17 +96,39 @@ def token_balance_deltas(tx: dict) -> dict[tuple[str, str], Decimal]:
     return {k: v for k, v in deltas.items() if v != 0}
 
 
+# Jito block-engine tip accounts (static, mainnet). Trading bots attach a
+# tip transfer alongside the swap; those lamports leave the fee payer but
+# are not part of the trade, so they must be added back like the tx fee.
+JITO_TIP_ACCOUNTS = frozenset(
+    {
+        "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+        "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+        "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+        "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+        "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+        "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+        "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+        "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+    }
+)
+
+
 def native_sol_delta(tx: dict, owner: str) -> Decimal:
-    """Net native SOL change for ``owner`` in SOL, with the tx fee added back
-    for the fee payer so the delta reflects the trade itself."""
+    """Net native SOL change for ``owner`` in SOL, with the tx fee and any
+    Jito tips added back for the fee payer so the delta reflects the trade
+    itself rather than what the trader paid to land it."""
     meta = tx.get("meta", {})
     pre, post = meta.get("preBalances") or [], meta.get("postBalances") or []
     keys = account_keys(tx)
+    bound = min(len(pre), len(post))
     lamports = sum(
-        post[i] - pre[i] for i, key in enumerate(keys) if key == owner and i < min(len(pre), len(post))
+        post[i] - pre[i] for i, key in enumerate(keys) if key == owner and i < bound
     )
     if owner == fee_payer(tx):
         lamports += int(meta.get("fee", 0))
+        for i, key in enumerate(keys):
+            if key in JITO_TIP_ACCOUNTS and i < bound and post[i] > pre[i]:
+                lamports += post[i] - pre[i]
     return Decimal(lamports) / LAMPORTS_PER_SOL
 
 
@@ -139,7 +161,6 @@ def infer_swap_events(
         if deltas.get((owner, mint))
     }
     native = native_sol_delta(tx, owner)
-    sol_flow = wsol_delta if wsol_delta != 0 else (native if abs(native) >= MIN_SOL_FLOW else Decimal(0))
 
     common = {
         "signature": (tx.get("transaction", {}).get("signatures") or [""])[0],
@@ -174,8 +195,18 @@ def infer_swap_events(
     if len(non_quote) == 1:
         (mint, delta), = non_quote.items()
         # Prefer a SOL leg flowing opposite to the token, then a stable leg.
-        if sol_flow != 0 and (sol_flow > 0) != (delta > 0):
-            return [build(mint, delta, WSOL_MINT, abs(sol_flow))]
+        # Both WSOL and native lamports can move in the same tx (unwrap dust,
+        # rent, second route legs); the LARGER opposite-signed leg is the
+        # trade — picking WSOL unconditionally let 0.001 SOL of dust
+        # misrepresent a 1.5 SOL native-settled buy.
+        native_flow = native if abs(native) >= MIN_SOL_FLOW else Decimal(0)
+        sol_legs = [
+            flow
+            for flow in (wsol_delta, native_flow)
+            if flow != 0 and (flow > 0) != (delta > 0)
+        ]
+        if sol_legs:
+            return [build(mint, delta, WSOL_MINT, abs(max(sol_legs, key=abs)))]
         for stable_mint, sdelta in stable_deltas.items():
             if (sdelta > 0) != (delta > 0):
                 return [build(mint, delta, stable_mint, abs(sdelta))]

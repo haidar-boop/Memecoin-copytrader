@@ -28,7 +28,9 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
+from app.db.util import aware
 from app.ingestion.parsers import parse_transaction
+from app.ingestion.programs import WSOL_MINT
 from app.logging_config import get_logger
 from app.services import metrics
 from app.services.redis import SOL_PRICE_KEY, TRADES_CHANNEL, ensure_group, publish_json
@@ -202,7 +204,11 @@ class IngestWriter:
                 TRADES_CHANNEL,
                 {
                     "signature": event.signature,
+                    "event_index": event.event_index,
+                    # Both names: the copytrader consumes "wallet", the
+                    # dashboard's live rows render REST's "wallet_address".
                     "wallet": event.wallet,
+                    "wallet_address": event.wallet,
                     "token_mint": event.token_mint,
                     "side": event.side.value,
                     "dex": event.dex.value,
@@ -211,7 +217,16 @@ class IngestWriter:
                     "quote_amount": event.quote_amount,
                     "quote_mint": event.quote_mint,
                     "price_quote_per_token": event.price_quote_per_token,
-                    "block_time": event.block_time.isoformat(),
+                    "price_usd": (
+                        event.price_quote_per_token * sol_price
+                        if event.price_quote_per_token is not None
+                        and sol_price is not None
+                        and event.quote_mint == WSOL_MINT
+                        else None
+                    ),
+                    # Explicit UTC: a bare isoformat() on a naive datetime
+                    # parses as LOCAL time in the browser's Date().
+                    "block_time": aware(event.block_time).isoformat(),
                     "slot": event.slot,
                 },
             )

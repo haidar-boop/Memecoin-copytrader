@@ -82,22 +82,43 @@ class CopyTrader:
         self._executor = CopyExecutor(settings, redis, rpc, self._guard)
 
     async def run(self) -> None:
-        pubsub = self._redis.pubsub()
-        await pubsub.subscribe(TRADES_CHANNEL)
         log.info("copytrader_started", mode=self._settings.copy_mode,
                  enabled=self._settings.copy_enabled)
-        try:
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
+        backoff = 1.0
+        while True:
+            # A Redis blip must not end the worker: pubsub.listen() raises on
+            # connection loss and there is no auto-resubscribe — reconnect
+            # with backoff or trades silently stop being copied forever.
+            pubsub = self._redis.pubsub()
+            try:
+                await pubsub.subscribe(TRADES_CHANNEL)
+                backoff = 1.0
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    try:
+                        await self.handle_message(message.get("data", ""))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception("copytrader_message_error")
+                # listen() ending WITHOUT an exception means the feed was
+                # closed deliberately (shutdown, tests) — a dead connection
+                # raises. Only errors warrant a reconnect.
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reconnect on any transport error
+                log.warning("copytrader_feed_disconnected",
+                            error=str(exc), retry_in=backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+            finally:
                 try:
-                    await self.handle_message(message.get("data", ""))
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.exception("copytrader_message_error")
-        finally:
-            await pubsub.unsubscribe(TRADES_CHANNEL)
+                    await pubsub.unsubscribe(TRADES_CHANNEL)
+                    await pubsub.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def handle_message(self, raw: str) -> Evaluation | None:
         payload = parse_trade_message(raw)

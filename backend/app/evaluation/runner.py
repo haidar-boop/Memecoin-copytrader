@@ -66,14 +66,16 @@ def _build_job_specs(
         from app.evaluation import reports
 
         now = datetime.now(tz=UTC)
+        # One daily report per UTC day — same restart-proof guard as weekly.
         async with session_factory() as session:
-            await reports.generate_report(
-                session,
-                kind="daily",
-                window_days=1,
-                top_n=settings.report_wallet_top_n,
-                now=now,
-            )
+            if not await reports.daily_report_exists(session, now):
+                await reports.generate_report(
+                    session,
+                    kind="daily",
+                    window_days=1,
+                    top_n=settings.report_wallet_top_n,
+                    now=now,
+                )
         # One weekly report per ISO week, generated on the first cycle of the
         # week — guarded so a sub-day interval or a worker restart can't emit
         # duplicate weekly rows.

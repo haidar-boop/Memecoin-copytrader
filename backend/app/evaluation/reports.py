@@ -617,6 +617,25 @@ async def weekly_report_exists(session: AsyncSession, now: datetime) -> bool:
     return row is not None
 
 
+async def daily_report_exists(session: AsyncSession, now: datetime) -> bool:
+    """True if a daily report was already generated this UTC day.
+
+    Mirrors :func:`weekly_report_exists` — without it, every worker restart
+    inside the same day emitted another duplicate daily report.
+    """
+    now = _aware(now)
+    day_start = _aware(datetime(now.year, now.month, now.day, tzinfo=UTC))
+    row = (
+        await session.execute(
+            select(Report.id).where(
+                Report.kind == "daily",
+                Report.generated_at >= sql_cutoff(session, day_start),
+            )
+        )
+    ).first()
+    return row is not None
+
+
 async def generate_report(
     session: AsyncSession,
     *,

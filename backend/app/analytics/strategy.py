@@ -191,8 +191,11 @@ async def _style_stats(
                 "window_days": window_days,
                 "wallet_count": wallet_counts[style],
                 "closed_positions": closed,
+                # Denominator matches the numerator's population: positions
+                # with NULL PnL can't win, so counting them in `closed` here
+                # silently biased win_rate downward.
                 "win_rate": (
-                    Decimal(wins) / Decimal(closed) if closed else None
+                    Decimal(wins) / Decimal(len(pnls)) if pnls else None
                 ),
                 "avg_roi": (
                     Decimal(str(sum(rois) / len(rois))) if rois else None
