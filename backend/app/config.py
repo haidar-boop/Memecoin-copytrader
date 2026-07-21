@@ -92,6 +92,47 @@ class Settings(BaseSettings):
     ml_label_horizon_hours: int = 24
     ml_model_dir: str = "./models"
 
+    # --- copy trading (Phase 3) --------------------------------------------
+    # Master switch. Even when enabled, mode defaults to paper: live trading
+    # additionally requires copy_mode="live" AND a funded keypair.
+    copy_enabled: bool = False
+    copy_mode: str = "paper"  # paper | live
+    # Base58 or JSON-array secret key for the DEDICATED trading wallet.
+    # Never a main wallet. Only read when copy_mode == "live".
+    trading_wallet_secret: str | None = None
+    # Which leaders to follow: manually tracked wallets, plus (optionally)
+    # any wallet whose confidence score clears the auto-follow bar.
+    copy_auto_follow: bool = True
+    copy_min_wallet_confidence: float = 65.0
+    # Decision thresholds and filters.
+    copy_min_confidence: float = 60.0
+    copy_max_risk: float = 70.0
+    copy_min_liquidity_sol: float = 25.0
+    copy_min_market_cap_usd: float = 10_000.0
+    copy_max_market_cap_usd: float = 50_000_000.0
+    copy_token_blacklist: list[str] = []
+    copy_wallet_blacklist: list[str] = []
+    # Sizing.
+    copy_size_mode: str = "fixed"  # fixed | percent (of leader's size)
+    copy_fixed_sol: float = 0.05
+    copy_percent_of_leader: float = 2.0  # percent when copy_size_mode=percent
+    copy_max_position_sol: float = 0.5
+    copy_max_open_positions: int = 10
+    # Execution.
+    jupiter_base_url: str = "https://lite-api.jup.ag/swap/v1"
+    copy_slippage_bps: int = 300
+    copy_execution_attempts: int = 3
+    copy_confirm_timeout_seconds: float = 45.0
+    # Safety rails.
+    copy_daily_loss_limit_sol: float = 1.0
+    copy_max_exposure_sol: float = 2.0
+    copy_token_cooldown_seconds: int = 900
+    copy_max_consecutive_failures: int = 5
+    copy_approval_mode: bool = False
+    # Shared secret for state-changing copytrading endpoints (resume,
+    # approvals). Unset = endpoints refuse in anything but dev.
+    admin_token: str | None = None
+
     # --- api ---------------------------------------------------------------
     api_host: str = "0.0.0.0"
     api_port: int = 8000

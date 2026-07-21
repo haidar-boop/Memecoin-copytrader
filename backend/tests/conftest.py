@@ -31,6 +31,43 @@ def load_tx() -> Callable[[str], dict]:
     return load_tx_fixture
 
 
+class StubRedis:
+    """Minimal in-memory async Redis stand-in for decision/execution tests."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False):
+        if nx and key in self.data:
+            return None
+        self.data[key] = str(value)
+        return True
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            removed += 1 if self.data.pop(key, None) is not None else 0
+        return removed
+
+    async def incr(self, key: str) -> int:
+        value = int(self.data.get(key, "0")) + 1
+        self.data[key] = str(value)
+        return value
+
+    async def incrby(self, key: str, amount: int) -> int:
+        value = int(self.data.get(key, "0")) + int(amount)
+        self.data[key] = str(value)
+        return value
+
+
+@pytest.fixture
+def stub_redis() -> StubRedis:
+    return StubRedis()
+
+
 @pytest.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")

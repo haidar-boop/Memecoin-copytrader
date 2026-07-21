@@ -476,3 +476,108 @@ class DiscoveredPattern(Base):
 PHASE2_HYPERTABLES: list[tuple[str, str]] = [
     ("wallet_stats_snapshots", "ts"),
 ]
+
+
+# --------------------------------------------------------------------------
+# Phase 3: decision engine & copy trading (migration 0003)
+# --------------------------------------------------------------------------
+
+
+class TradeDecision(Base):
+    """Every copy/skip evaluation, persisted forever — skips are evidence too.
+
+    ``factors`` explains the score composition; ``reasons`` records every
+    gate (filters, safety checks) with its outcome, so any decision can be
+    audited and Phase 4 can grade the decision policy itself.
+    """
+
+    __tablename__ = "trade_decisions"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime)
+    source_signature: Mapped[str | None] = mapped_column(String(96))
+    # NULL when the leader/token was not yet in the database at decision time
+    # (an unknown-entity skip) — never a sentinel 0 that would collide in the
+    # per-leader decision index.
+    leader_wallet_id: Mapped[int | None] = mapped_column(BigInteger)
+    token_id: Mapped[int | None] = mapped_column(BigInteger)
+    side: Mapped[str] = mapped_column(String(4))  # buy | sell
+    mode: Mapped[str] = mapped_column(String(8))  # paper | live
+    confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))  # 0..100
+    risk_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))  # 0..100
+    expected_reward: Mapped[Decimal | None] = mapped_column(Amount)  # expected ROI
+    expected_drawdown: Mapped[Decimal | None] = mapped_column(Amount)
+    p_profit: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    decision: Mapped[str] = mapped_column(String(8))  # copy | skip
+    size_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    reasons: Mapped[list | None] = mapped_column(JSONVariant)
+    factors: Mapped[list | None] = mapped_column(JSONVariant)
+
+    __table_args__ = (
+        Index("ix_trade_decisions_created", "created_at"),
+        Index("ix_trade_decisions_wallet_created", "leader_wallet_id", "created_at"),
+        Index("ix_trade_decisions_decision_created", "decision", "created_at"),
+    )
+
+
+class CopyTrade(Base):
+    """One execution attempt for a copy decision (paper or live)."""
+
+    __tablename__ = "copy_trades"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    decision_id: Mapped[int] = mapped_column(ForeignKey("trade_decisions.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime)
+    mode: Mapped[str] = mapped_column(String(8))
+    side: Mapped[str] = mapped_column(String(4))
+    token_id: Mapped[int] = mapped_column(BigInteger)
+    leader_wallet_id: Mapped[int] = mapped_column(BigInteger)
+    size_sol: Mapped[Decimal] = mapped_column(Amount)
+    # pending_approval -> approved -> simulated -> submitted -> confirmed
+    # (paper fills jump straight to confirmed) | failed | rejected
+    status: Mapped[str] = mapped_column(String(20))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    tx_signature: Mapped[str | None] = mapped_column(String(96))
+    quote: Mapped[dict | None] = mapped_column(JSONVariant)
+    filled_token_amount: Mapped[Decimal | None] = mapped_column(Amount)
+    filled_price_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("ix_copy_trades_status_created", "status", "created_at"),
+        Index("ix_copy_trades_token_created", "token_id", "created_at"),
+    )
+
+
+class CopyPosition(Base):
+    """Our own (paper or live) position opened by copying a leader."""
+
+    __tablename__ = "copy_positions"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    token_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    leader_wallet_id: Mapped[int] = mapped_column(BigInteger)
+    mode: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(8), default="open")  # open | closed
+    opened_at: Mapped[datetime] = mapped_column(TZDateTime)
+    closed_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    spent_sol: Mapped[Decimal] = mapped_column(Amount, default=Decimal(0))
+    tokens_bought: Mapped[Decimal] = mapped_column(Amount, default=Decimal(0))
+    sold_sol: Mapped[Decimal] = mapped_column(Amount, default=Decimal(0))
+    tokens_sold: Mapped[Decimal] = mapped_column(Amount, default=Decimal(0))
+    realized_pnl_sol: Mapped[Decimal | None] = mapped_column(Amount)
+    entry_trade_id: Mapped[int | None] = mapped_column(BigInteger)
+    exit_trade_id: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        Index("ix_copy_positions_status_token", "status", "token_id"),
+        # One open copy position per token: mirrors an exit unambiguously.
+        Index(
+            "uq_copy_positions_open_token",
+            "token_id",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+            sqlite_where=text("status = 'open'"),
+        ),
+    )

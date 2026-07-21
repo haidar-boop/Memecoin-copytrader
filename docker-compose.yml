@@ -103,6 +103,22 @@ services:
     volumes:
       - mlmodels:/srv/backend/models
 
+  copytrader:
+    <<: *backend-service
+    environment:
+      <<: *backend-env
+      METRICS_PORT: "9105"
+      ML_MODEL_DIR: /srv/backend/models
+      # Copy trading is OFF by default. Even enabled, COPY_MODE defaults to
+      # paper; live requires COPY_MODE=live plus TRADING_WALLET_SECRET.
+      COPY_ENABLED: "${COPY_ENABLED:-false}"
+      COPY_MODE: "${COPY_MODE:-paper}"
+      TRADING_WALLET_SECRET: "${TRADING_WALLET_SECRET:-}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
+    command: ["python", "-m", "workers.run_copytrader"]
+    volumes:
+      - mlmodels:/srv/backend/models
+
 volumes:
   pgdata:
   redisdata:

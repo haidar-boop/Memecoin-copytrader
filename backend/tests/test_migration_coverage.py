@@ -30,15 +30,19 @@ def test_migration_table_lists_cover_metadata() -> None:
         spec.loader.exec_module(module)
         return module
 
-    m0001 = load("0001")
-    m0002 = load("0002")
-
-    covered = _table_names(m0001._phase1_tables()) | _table_names(m0002._phase2_tables())
+    lists = [
+        _table_names(load("0001")._phase1_tables()),
+        _table_names(load("0002")._phase2_tables()),
+        _table_names(load("0003")._phase3_tables()),
+    ]
+    covered: set[str] = set().union(*lists)
     declared = set(Base.metadata.tables.keys())
     missing = declared - covered
     assert not missing, (
         f"tables missing from every migration's pinned list: {sorted(missing)} — "
         "add them to the owning revision"
     )
-    duplicated = _table_names(m0001._phase1_tables()) & _table_names(m0002._phase2_tables())
-    assert not duplicated, f"tables created by two migrations: {sorted(duplicated)}"
+    for i in range(len(lists)):
+        for j in range(i + 1, len(lists)):
+            duplicated = lists[i] & lists[j]
+            assert not duplicated, f"tables created by two migrations: {sorted(duplicated)}"

@@ -44,6 +44,21 @@ def to_decimal(value: Any) -> Decimal | None:
     return parsed if parsed.is_finite() else None
 
 
+_LAMPORT_QUANTUM = Decimal("0.000000001")
+
+
+def quantize_sol(value: Decimal) -> Decimal:
+    """Round a SOL amount to lamport precision (9 dp).
+
+    Chain amounts are exact in lamports; anything beyond 9 decimals is float
+    round-trip noise (SQLite stores NUMERIC as float in the test suite).
+    """
+    quantized = value.quantize(_LAMPORT_QUANTUM).normalize()
+    # normalize() can flip large integers into scientific notation (1E+2);
+    # rescale those back to plain integers.
+    return quantized.quantize(Decimal(1)) if quantized.as_tuple().exponent > 0 else quantized
+
+
 def to_float(value: Any) -> float | None:
     """Driver output -> finite float, else None."""
     if value is None:

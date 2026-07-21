@@ -155,6 +155,29 @@ class SolanaRpc:
         result = await self.call("getTokenLargestAccounts", [mint, {"commitment": "confirmed"}])
         return [] if result is None else list(result.get("value", []))
 
+    # --- transaction submission (Phase 3 live execution) -------------------
+
+    async def simulate_transaction(self, tx_base64: str) -> dict | None:
+        result = await self.call(
+            "simulateTransaction",
+            [tx_base64, {"encoding": "base64", "commitment": "confirmed",
+                         "replaceRecentBlockhash": True}],
+        )
+        return None if result is None else result.get("value")
+
+    async def send_transaction(self, tx_base64: str) -> str:
+        """Submit a signed transaction; returns the signature. Raises on error."""
+        return await self.call(
+            "sendTransaction",
+            [tx_base64, {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}],
+        )
+
+    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        result = await self.call(
+            "getSignatureStatuses", [signatures, {"searchTransactionHistory": False}]
+        )
+        return [] if result is None else list(result.get("value", []))
+
     async def get_program_accounts_count(
         self, program_id: str, filters: list[dict] | None = None
     ) -> int:

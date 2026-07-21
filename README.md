@@ -1,11 +1,13 @@
-# Memecoin Copytrader — Intelligence Engine & Analysis Brain
+# Memecoin Copytrader — Intelligence, Analysis & Copy Trading
 
-AI-powered Solana memecoin copy-trading platform. **Phases 1-2 do not trade.**
-Phase 1 continuously watches Solana DEX activity and builds an append-only
-learning database of wallets, tokens, trades, market conditions, and
-outcomes. Phase 2 is the brain on top of it: wallet performance metrics,
-evidence-gated confidence scores with full explanations, trading-style
-recognition, calibrated ML models, and pattern discovery.
+AI-powered Solana memecoin copy-trading platform. Phase 1 continuously
+watches Solana DEX activity and builds an append-only learning database of
+wallets, tokens, trades, market conditions, and outcomes. Phase 2 is the
+brain on top of it: wallet performance metrics, evidence-gated confidence
+scores with full explanations, trading-style recognition, calibrated ML
+models, and pattern discovery. Phase 3 is the decision engine and copy
+trader — **paper trading by default; live execution is off unless explicitly
+enabled with a dedicated funded wallet.**
 
 ## Architecture
 
@@ -106,10 +108,42 @@ Key endpoints: `/api/analytics/wallets/top`, `/api/wallets/{address}/stats`
 (+`/history`), `/api/analytics/strategies`, `/api/analytics/patterns`,
 `/api/analytics/models`.
 
-## Roadmap
+## Phase 3 — Decision Engine & Copy Trading
 
-- **Phase 3**: decision engine & copy trading (evidence-gated, paper-trading
-  default, strict safety limits)
+The `copytrader` worker subscribes to the live `events:trades` feed. Every
+tracked-wallet buy is **evaluated and the decision persisted** (skips
+included — they are evidence for Phase 4):
+
+- **Trade evaluator** (`app/decision/evaluator.py`) blends adaptive wallet
+  confidence, the ML profit probability, and token quality into a
+  confidence score (0–100); composes a risk score (0–100) from liquidity,
+  token age, volatility, and wallet consistency; and runs a full gate stack
+  (follow status, blacklists, thresholds, liquidity/market-cap filters,
+  sizing, safety rails, duplicate prevention). Both the score composition
+  (`factors`) and every gate outcome (`reasons`) are stored, so any decision
+  is fully auditable.
+- **Adaptive ranking** (`app/decision/ranking.py`): an exponentially-weighted
+  per-leader adjustment demotes wallets whose copied trades lose (fast) and
+  restores confidence as fresh wins arrive (slow), with a minimum-sample
+  guard so small samples don't swing rankings.
+- **Execution** (`app/execution/`): Jupiter quotes, **paper fills at the real
+  quote price** by default; the live path additionally simulates every
+  transaction before submission, signs with the dedicated keypair, retries
+  with backoff, and prevents duplicates via Redis locks.
+- **Safety** (`app/decision/safety.py`): daily loss limit, max exposure,
+  max open positions, per-token cooldowns, consecutive-failure auto-stop,
+  and a global emergency stop — all fail closed.
+
+Endpoints under `/api/copytrading`: `decisions`, `trades`, `positions`,
+`status` (risk dashboard), `emergency-stop` (no auth — stopping is never
+gated), and admin-token-gated `resume` / `approvals/{id}`.
+
+> **Safety posture:** `COPY_ENABLED=false` out of the box. Turn it on in
+> `paper` mode first to exercise the whole pipeline with simulated fills.
+> Live trading requires `COPY_MODE=live` **and** `TRADING_WALLET_SECRET` for
+> a dedicated wallet — never a main wallet.
+
+## Roadmap
 - **Phase 4**: continuous self-evaluation & market regime learning
 - **Phase 5**: production platform (Next.js dashboard, auth, Telegram,
   WebSocket feeds)

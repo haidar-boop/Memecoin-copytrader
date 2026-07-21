@@ -43,23 +43,26 @@ TRADE_TRAINING_WINDOW_DAYS = 90
 PERSISTENCE_WINDOW_DAYS = 180
 
 
+# Column set fed to the trade-profit model's wallet features. Single source
+# of truth shared by dataset construction and online prediction so training
+# and serving can never drift.
+WALLET_FEATURE_COLUMNS: tuple[str, ...] = (
+    "win_rate",
+    "profit_factor",
+    "closed_position_count",
+    "avg_hold_seconds",
+    "roi_std",
+    "confidence_score",
+    "trade_count",
+    "total_pnl_sol",
+    "pnl_30d_sol",
+    "trades_per_day",
+    "avg_roi",
+)
+
+
 def _stats_dict(row: WalletStatsSnapshot) -> dict[str, Any]:
-    return {
-        column: getattr(row, column)
-        for column in (
-            "win_rate",
-            "profit_factor",
-            "closed_position_count",
-            "avg_hold_seconds",
-            "roi_std",
-            "confidence_score",
-            "trade_count",
-            "total_pnl_sol",
-            "pnl_30d_sol",
-            "trades_per_day",
-            "avg_roi",
-        )
-    }
+    return {column: getattr(row, column) for column in WALLET_FEATURE_COLUMNS}
 
 
 class _SnapshotIndex:
