@@ -1,0 +1,91 @@
+name: memecoin-copytrader
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://copytrader:${POSTGRES_PASSWORD:-copytrader}@db:5432/copytrader
+  REDIS_URL: redis://redis:6379/0
+  SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+  SOLANA_WS_URL: ${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-backend-service: &backend-service
+  build: ./backend
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: copytrader
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-copytrader}
+      POSTGRES_DB: copytrader
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copytrader -d copytrader"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "1gb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  migrate:
+    build: ./backend
+    environment: *backend-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend-service
+    environment: *backend-env
+    ports:
+      - "8000:8000"
+
+  listener:
+    <<: *backend-service
+    environment:
+      <<: *backend-env
+      METRICS_PORT: "9101"
+    command: ["python", "-m", "workers.run_listener"]
+
+  ingest-writer:
+    <<: *backend-service
+    environment:
+      <<: *backend-env
+      METRICS_PORT: "9102"
+    command: ["python", "-m", "workers.run_ingest_writer"]
+
+  enrichment:
+    <<: *backend-service
+    environment:
+      <<: *backend-env
+      METRICS_PORT: "9103"
+    command: ["python", "-m", "workers.run_enrichment"]
+
+volumes:
+  pgdata:
+  redisdata:
