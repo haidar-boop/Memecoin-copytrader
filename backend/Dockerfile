@@ -18,6 +18,7 @@ EOF
 
 COPY app ./app
 COPY workers ./workers
+COPY telegram_bot ./telegram_bot
 COPY alembic ./alembic
 COPY alembic.ini ./
 RUN pip install --no-cache-dir --no-deps -e .

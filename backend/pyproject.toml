@@ -37,7 +37,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app", "workers"]
+packages = ["app", "workers", "telegram_bot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
