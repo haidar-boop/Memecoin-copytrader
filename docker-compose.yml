@@ -64,6 +64,9 @@ services:
     environment:
       <<: *backend-env
       ML_MODEL_DIR: /srv/backend/models
+      JWT_SECRET: "${JWT_SECRET:-dev-insecure-change-me}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD_HASH: "${ADMIN_PASSWORD_HASH:-}"
     ports:
       - "8000:8000"
     volumes:
