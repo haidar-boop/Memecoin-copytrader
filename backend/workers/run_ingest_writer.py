@@ -21,6 +21,11 @@ async def main(settings: Settings) -> None:
         max_retries=settings.rpc_max_retries,
         requests_per_second=settings.rpc_requests_per_second,
         budget=RpcBudget(redis, settings.rpc_daily_credit_budget),
+        priority_budget=RpcBudget(
+            redis,
+            settings.rpc_priority_daily_credit_budget,
+            key_prefix=RpcBudget.PRIORITY_KEY_PREFIX,
+        ),
     )
     consumer = f"writer-{os.environ.get('HOSTNAME', os.getpid())}"
     try:

@@ -135,3 +135,85 @@ async def test_exhaustion_notifies_exactly_once(
     for _ in range(2):
         await budget.acquire()
     assert len(redis.published) == 1
+
+
+async def test_solana_rpc_routes_exempt_calls_to_priority_budget(monkeypatch):
+    """The regression this guards: budget_exempt=True must draw from its OWN
+    capped budget, never bypass budgeting entirely — an exempt call after the
+    MAIN budget is exhausted must still count (and can itself be capped),
+    so total daily spend stays bounded by main_limit + priority_limit."""
+    from app.services.rpc import SolanaRpc
+
+    main_redis = FakeRedis()
+    priority_redis = FakeRedis()
+    main_budget = RpcBudget(main_redis, daily_limit=5)
+    priority_budget = RpcBudget(
+        priority_redis, daily_limit=3, key_prefix=RpcBudget.PRIORITY_KEY_PREFIX
+    )
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"result": "ok"}
+
+        def raise_for_status(self):
+            pass
+
+    class FakeClient:
+        async def post(self, url, json):
+            return FakeResponse()
+
+        async def aclose(self):
+            pass
+
+    rpc = SolanaRpc(
+        "http://test", budget=main_budget, priority_budget=priority_budget
+    )
+    rpc._client = FakeClient()
+    rpc._limiter._interval = 0.0
+
+    # Exhaust the MAIN budget with non-exempt calls.
+    for _ in range(5):
+        await rpc.call("getTransaction", budget_exempt=False)
+    assert main_redis.counters
+    main_key = next(iter(main_redis.counters))
+    assert main_redis.counters[main_key] == 5
+
+    # Exempt calls must NOT touch the main counter at all.
+    await rpc.call("sendTransaction", budget_exempt=True)
+    assert main_redis.counters[main_key] == 5  # unchanged
+    priority_key = next(iter(priority_redis.counters))
+    assert priority_redis.counters[priority_key] == 1
+
+
+async def test_solana_rpc_exempt_without_priority_budget_is_unbounded():
+    """Documented legacy fallback: no priority_budget configured -> exempt
+    calls skip budgeting entirely (opt-out, not the default wiring)."""
+    from app.services.rpc import SolanaRpc
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"result": "ok"}
+
+        def raise_for_status(self):
+            pass
+
+    class FakeClient:
+        async def post(self, url, json):
+            return FakeResponse()
+
+        async def aclose(self):
+            pass
+
+    main_redis = FakeRedis()
+    rpc = SolanaRpc(
+        "http://test", budget=RpcBudget(main_redis, daily_limit=1), priority_budget=None
+    )
+    rpc._client = FakeClient()
+    rpc._limiter._interval = 0.0
+    for _ in range(10):
+        await rpc.call("sendTransaction", budget_exempt=True)
+    assert main_redis.counters == {}  # never touched

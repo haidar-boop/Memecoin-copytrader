@@ -37,25 +37,32 @@ class RpcBudget:
     """Hard daily cap on RPC calls, shared across processes via Redis.
 
     Every call increments an atomic per-UTC-day counter. Once the day's
-    budget is spent, non-exempt calls sleep until the day rolls over. Redis
-    being unreachable fails open — losing budget accounting is preferable to
+    budget is spent, calls sleep until the day rolls over. Redis being
+    unreachable fails open — losing budget accounting is preferable to
     halting ingestion and trading.
+
+    Two independent instances exist (main + priority, see
+    :data:`PRIORITY_KEY_PREFIX`) with separate counters and separate limits,
+    so total daily spend is bounded by the SUM of both — a wallet followed
+    by the priority lane can never make total spend unbounded, it can only
+    spend up to its own smaller allowance on top of the main cap.
     """
 
     KEY_PREFIX = "rpc:credits:"
+    PRIORITY_KEY_PREFIX = "rpc:credits:priority:"
     # Counter keys outlive their day briefly so operators can inspect usage.
     KEY_TTL_SECONDS = 2 * 86400
     POLL_SECONDS = 60.0
     WARN_EVERY_SECONDS = 300.0
 
-    def __init__(self, redis: Any, daily_limit: int) -> None:
+    def __init__(self, redis: Any, daily_limit: int, key_prefix: str = KEY_PREFIX) -> None:
         self._redis = redis
         self._limit = daily_limit
         self._last_warn = 0.0
+        self._key_prefix = key_prefix
 
-    @staticmethod
-    def _key() -> str:
-        return RpcBudget.KEY_PREFIX + datetime.now(UTC).strftime("%Y-%m-%d")
+    def _key(self) -> str:
+        return self._key_prefix + datetime.now(UTC).strftime("%Y-%m-%d")
 
     async def _incr(self) -> int | None:
         try:
@@ -76,22 +83,27 @@ class RpcBudget:
         and one alert is signal while eight are noise.
         """
         try:
-            marker_key = "rpc:budget_notified:" + datetime.now(UTC).strftime("%Y-%m-%d")
+            marker_key = (
+                "rpc:budget_notified:"
+                + self._key_prefix
+                + datetime.now(UTC).strftime("%Y-%m-%d")
+            )
             if not await self._redis.set(marker_key, "1", nx=True, ex=self.KEY_TTL_SECONDS):
                 return
             from app.services.notifications import Notification, NotificationService
 
+            lane = "priority (followed-wallet)" if self._key_prefix == self.PRIORITY_KEY_PREFIX else "main"
             await NotificationService(self._redis).emit(
                 Notification(
                     kind="system_error",
-                    title="RPC daily budget exhausted",
+                    title=f"RPC {lane} budget exhausted",
                     body=(
-                        f"Daily RPC credit budget ({self._limit:,}) is spent. "
-                        "Ingestion and enrichment pause until the next UTC day; "
+                        f"Daily RPC credit budget ({self._limit:,}) for the {lane} "
+                        "lane is spent. It pauses until the next UTC day; "
                         "live-execution calls remain unaffected."
                     ),
                     severity="warning",
-                    data={"used": used, "limit": self._limit},
+                    data={"used": used, "limit": self._limit, "lane": lane},
                 )
             )
         except Exception as exc:  # noqa: BLE001 - alerting must never block RPC flow
@@ -156,11 +168,18 @@ class SolanaRpc:
         max_retries: int = 5,
         requests_per_second: float = 8.0,
         budget: RpcBudget | None = None,
+        priority_budget: RpcBudget | None = None,
     ):
         self._url = url
         self._max_retries = max_retries
         self._limiter = _RateLimiter(requests_per_second)
         self._budget = budget
+        # Exempt calls (live execution, followed-wallet priority fetches)
+        # draw from their OWN capped budget instead of skipping the check
+        # entirely — "never wait" must not mean "unbounded spend." If no
+        # priority budget is configured they truly are unbounded (legacy/
+        # opt-out behavior); every worker should pass one.
+        self._priority_budget = priority_budget
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
 
     async def aclose(self) -> None:
@@ -172,17 +191,21 @@ class SolanaRpc:
         params: list[Any] | None = None,
         budget_exempt: bool | None = None,
     ) -> Any:
-        """``budget_exempt=True`` consumes budget but never blocks on it —
-        for calls that gate live decisions (execution, pre-copy risk probes)
-        where waiting until tomorrow is worse than a small overspend."""
+        """``budget_exempt=True`` calls draw from the smaller, separate
+        priority budget (never the main one) — real-time execution/leader
+        fetches skip the MAIN queue, but they are still capped by their own
+        daily allowance, not unbounded."""
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
         backoff = 0.5
         if budget_exempt is None:
             budget_exempt = method in BUDGET_EXEMPT_METHODS
         for attempt in range(self._max_retries + 1):
             # Each HTTP attempt (retries included) costs one provider credit.
-            if self._budget is not None:
-                await self._budget.acquire(exempt=budget_exempt)
+            if budget_exempt:
+                if self._priority_budget is not None:
+                    await self._priority_budget.acquire()
+            elif self._budget is not None:
+                await self._budget.acquire()
             await self._limiter.wait()
             started = time.monotonic()
             try:

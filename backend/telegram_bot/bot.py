@@ -209,6 +209,9 @@ class TelegramNotifier:
             "queue_depth": None,
             "credits_used": None,
             "credits_limit": self._settings.rpc_daily_credit_budget or None,
+            "priority_credits_used": None,
+            "priority_credits_limit": self._settings.rpc_priority_daily_credit_budget
+            or None,
             "emergency_stop": None,
         }
         try:
@@ -233,10 +236,13 @@ class TelegramNotifier:
             health["queue_depth"] = await self._redis.xlen(
                 self._settings.ingest_stream_key
             )
-            raw = await self._redis.get(
-                RpcBudget.KEY_PREFIX + datetime.now(UTC).strftime("%Y-%m-%d")
-            )
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
+            raw = await self._redis.get(RpcBudget.KEY_PREFIX + today)
             health["credits_used"] = int(raw) if raw is not None else 0
+            raw_priority = await self._redis.get(RpcBudget.PRIORITY_KEY_PREFIX + today)
+            health["priority_credits_used"] = (
+                int(raw_priority) if raw_priority is not None else 0
+            )
             health["redis_ok"] = True
             health["emergency_stop"] = await self._redis.get(EMERGENCY_STOP_KEY)
         except Exception as exc:  # noqa: BLE001

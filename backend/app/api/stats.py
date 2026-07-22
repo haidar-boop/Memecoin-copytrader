@@ -59,6 +59,11 @@ async def ingestion_stats(
         "used_today": None,
         "exhausted": False,
     }
+    rpc_priority_budget: dict = {
+        "limit": settings.rpc_priority_daily_credit_budget or None,
+        "used_today": None,
+        "exhausted": False,
+    }
     try:
         queue_depth = await redis.xlen(settings.ingest_stream_key)
         listener_checkpoint = await redis.hgetall("ingest:checkpoint:listener")
@@ -66,15 +71,22 @@ async def ingestion_stats(
 
         from app.services.rpc import RpcBudget
 
-        raw = await redis.get(
-            RpcBudget.KEY_PREFIX + datetime.now(UTC).strftime("%Y-%m-%d")
-        )
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        raw = await redis.get(RpcBudget.KEY_PREFIX + today)
         if raw is not None:
             used = int(raw)
             rpc_budget["used_today"] = used
             rpc_budget["exhausted"] = bool(
                 settings.rpc_daily_credit_budget
                 and used > settings.rpc_daily_credit_budget
+            )
+        raw_priority = await redis.get(RpcBudget.PRIORITY_KEY_PREFIX + today)
+        if raw_priority is not None:
+            used_priority = int(raw_priority)
+            rpc_priority_budget["used_today"] = used_priority
+            rpc_priority_budget["exhausted"] = bool(
+                settings.rpc_priority_daily_credit_budget
+                and used_priority > settings.rpc_priority_daily_credit_budget
             )
     except Exception:
         pass
@@ -84,4 +96,5 @@ async def ingestion_stats(
         "queue_depth": queue_depth,
         "listener_checkpoint": listener_checkpoint,
         "rpc_budget": rpc_budget,
+        "rpc_priority_budget": rpc_priority_budget,
     }

@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # services via Redis. 0 disables the cap. Non-critical calls block until
     # the next UTC day once spent; execution-critical calls are exempt.
     rpc_daily_credit_budget: int = 0
+    # Separate, smaller cap for budget-exempt calls (live execution, the
+    # followed-wallet priority lane, rug-check probes). These never wait in
+    # line behind the main budget, but they must still be BOUNDED — without
+    # this they could spend without limit even after the main budget is
+    # exhausted. A handful of followed wallets' trades need nowhere near
+    # this; it exists as a real backstop, not a soft target.
+    rpc_priority_daily_credit_budget: int = 30_000
 
     # --- ingestion ---------------------------------------------------------
     # Which venues the listener subscribes to. Values are Dex enum values.

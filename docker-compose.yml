@@ -7,6 +7,7 @@ x-backend-env: &backend-env
   SOLANA_WS_URL: ${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
   RPC_REQUESTS_PER_SECOND: ${RPC_REQUESTS_PER_SECOND:-8}
   RPC_DAILY_CREDIT_BUDGET: ${RPC_DAILY_CREDIT_BUDGET:-0}
+  RPC_PRIORITY_DAILY_CREDIT_BUDGET: ${RPC_PRIORITY_DAILY_CREDIT_BUDGET:-30000}
   # Ingest buffer cap: the stream auto-drops OLDEST entries past this size,
   # so a budget-limited writer always works the freshest slice of the
   # firehose instead of falling permanently behind a FIFO backlog. Size it

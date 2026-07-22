@@ -164,6 +164,15 @@ def format_health(health: dict[str, Any]) -> str:
         lines.append(f"{flag} RPC credits today: {used or 0:,} / {limit:,} ({pct:.0f}%)")
     elif used is not None:
         lines.append(f"RPC credits today: {used:,} (no cap)")
+    p_used, p_limit = health.get("priority_credits_used"), health.get(
+        "priority_credits_limit"
+    )
+    if p_limit:
+        p_pct = 100.0 * p_used / p_limit if p_used is not None else 0.0
+        p_flag = ok(p_used is None or p_used <= p_limit)
+        lines.append(
+            f"{p_flag} Priority-lane credits: {p_used or 0:,} / {p_limit:,} ({p_pct:.0f}%)"
+        )
     stop = health.get("emergency_stop")
     lines.append(
         f"\U0001f6a8 EMERGENCY STOP: {stop}" if stop else "✅ No emergency stop"
