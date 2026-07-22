@@ -212,7 +212,7 @@ class Evaluator:
         if liquidity is None and self._liquidity_assessor is not None:
             try:
                 liquidity = await self._liquidity_assessor(session, token)
-            except Exception as exc:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 log.exception("liquidity_assessor_failed", mint=token.mint)
                 liquidity = None
             else:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import httpx
-import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport
 from sqlalchemy import select
@@ -13,7 +12,7 @@ from sqlalchemy import select
 from app.api import wallets
 from app.api.deps import get_db, get_redis
 from app.auth.security import create_access_token
-from app.config import Settings, get_settings
+from app.config import get_settings
 from app.db.models import Wallet
 
 VALID_ADDR = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
