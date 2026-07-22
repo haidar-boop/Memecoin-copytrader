@@ -6,13 +6,22 @@ x-backend-env: &backend-env
   SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
   SOLANA_WS_URL: ${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
   RPC_REQUESTS_PER_SECOND: ${RPC_REQUESTS_PER_SECOND:-8}
-  RPC_DAILY_CREDIT_BUDGET: ${RPC_DAILY_CREDIT_BUDGET:-0}
+  # HARD daily ceiling on main-lane RPC credits (the sampled firehose, the
+  # dominant consumer). SAFE BY DEFAULT: this is a real cap, NOT 0/unlimited,
+  # so credit protection never depends on remembering to set it in .env. On a
+  # 10M-credit/month Helius plan (~333k/day) this default + the 30k priority
+  # lane below = ~180k/day worst case (~5.4M/month), leaving headroom. Raise
+  # it in .env if you want more firehose coverage; set 0 only to opt OUT of
+  # the cap deliberately (unlimited — how the earlier overspend happened).
+  RPC_DAILY_CREDIT_BUDGET: ${RPC_DAILY_CREDIT_BUDGET:-150000}
   RPC_PRIORITY_DAILY_CREDIT_BUDGET: ${RPC_PRIORITY_DAILY_CREDIT_BUDGET:-30000}
   # Ingest buffer cap: the stream auto-drops OLDEST entries past this size,
   # so a budget-limited writer always works the freshest slice of the
-  # firehose instead of falling permanently behind a FIFO backlog. Size it
-  # to ~30-60s of inflow for real-time copy trading.
-  INGEST_STREAM_MAXLEN: ${INGEST_STREAM_MAXLEN:-1000000}
+  # firehose instead of falling permanently behind a FIFO backlog. Sized to
+  # ~30-60s of inflow for real-time copy trading. A large value (e.g. the old
+  # 1,000,000 default) makes the writer chew through a stale backlog one
+  # credit at a time — wasted credits AND minutes-old trades.
+  INGEST_STREAM_MAXLEN: ${INGEST_STREAM_MAXLEN:-10000}
   INGEST_PRIORITY_MAXLEN: ${INGEST_PRIORITY_MAXLEN:-5000}
   ENABLED_DEXES: ${ENABLED_DEXES:-["pumpfun","pumpswap","raydium_amm","raydium_clmm","raydium_cpmm","orca_whirlpool","jupiter"]}
   VETTING_ENABLED: ${VETTING_ENABLED:-true}
