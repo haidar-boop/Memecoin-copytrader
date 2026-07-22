@@ -71,6 +71,7 @@ class WalletStatsOut(BaseModel):
 class TopWalletOut(BaseModel):
     address: str
     wallet_id: int
+    is_tracked: bool = False
     confidence_score: Decimal | None
     total_pnl_sol: Decimal | None
     win_rate: Decimal | None
@@ -171,7 +172,7 @@ async def top_wallets(
 ) -> list[TopWalletOut]:
     col = _RANK_COLUMNS[by]
     stmt = (
-        select(WalletStats, Wallet.address)
+        select(WalletStats, Wallet.address, Wallet.is_tracked)
         .join(Wallet, Wallet.id == WalletStats.wallet_id)
         .where(col.is_not(None))
         .order_by(col.desc())
@@ -184,6 +185,7 @@ async def top_wallets(
         TopWalletOut(
             address=address,
             wallet_id=ws.wallet_id,
+            is_tracked=bool(is_tracked),
             confidence_score=ws.confidence_score,
             total_pnl_sol=ws.total_pnl_sol,
             win_rate=ws.win_rate,
@@ -192,7 +194,7 @@ async def top_wallets(
             style=ws.style,
             computed_at=ws.computed_at,
         )
-        for ws, address in rows
+        for ws, address, is_tracked in rows
     ]
 
 

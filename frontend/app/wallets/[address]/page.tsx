@@ -3,9 +3,10 @@
 import React from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { api, WalletStats, WalletStatsSnapshot } from "@/lib/api";
+import { api, Wallet, WalletStats, WalletStatsSnapshot } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { Sparkline } from "@/components/Sparkline";
+import { StarButton } from "@/components/StarButton";
 import {
   StatTile,
   Section,
@@ -67,6 +68,10 @@ export default function WalletDetailPage() {
   const params = useParams<{ address: string }>();
   const address = params.address;
 
+  const wallet = useApi<Wallet>(
+    () => api.get(`/api/wallets/${address}`),
+    [address],
+  );
   const stats = useApi<WalletStats>(
     () => api.get(`/api/wallets/${address}/stats`),
     [address],
@@ -89,9 +94,21 @@ export default function WalletDetailPage() {
         <Link href="/wallets" className="text-sm text-accent">
           ← Rankings
         </Link>
-        <h1 className="mt-1 break-all font-mono text-xl font-bold">
-          {address}
+        <h1 className="mt-1 flex items-start gap-2 break-all font-mono text-xl font-bold">
+          {wallet.data && (
+            <StarButton
+              address={address}
+              tracked={wallet.data.is_tracked}
+              className="mt-0.5 shrink-0"
+            />
+          )}
+          <span>{address}</span>
         </h1>
+        {wallet.data?.is_tracked && (
+          <div className="mt-1 text-xs text-amber-400">
+            Tracked — the copy engine follows this wallet&apos;s buys.
+          </div>
+        )}
       </div>
 
       {stats.loading && <Loading what="wallet stats" />}

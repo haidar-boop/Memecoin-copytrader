@@ -1,17 +1,81 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.analytics import WalletStatsOut, WalletStatsSnapshotOut
 from app.api.deps import get_db
 from app.api.schemas import PositionOut, TradeOut, WalletOut
+from app.auth.deps import require_auth_if_configured
 from app.db.models import Position, Token, Trade, Wallet, WalletStats, WalletStatsSnapshot
+from app.logging_config import get_logger
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/wallets", tags=["wallets"])
+
+# Solana pubkeys are 32-44 chars of base58 (no 0, O, I, l).
+_BASE58_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+
+
+class TrackRequest(BaseModel):
+    address: str
+
+
+@router.post("/track", response_model=WalletOut)
+async def track_wallet(
+    body: TrackRequest,
+    db: AsyncSession = Depends(get_db),
+    _user: str | None = Depends(require_auth_if_configured),
+) -> Wallet:
+    """Star a wallet: mark it manually tracked so the copy engine follows it.
+
+    Unknown addresses are created on the spot — starring a wallet found on
+    Twitter/DexScreener must not wait for the chain listener to happen upon
+    it first. Idempotent.
+    """
+    address = body.address.strip()
+    if not _BASE58_RE.fullmatch(address):
+        raise HTTPException(status_code=422, detail="not a valid Solana address")
+    wallet = (
+        await db.execute(select(Wallet).where(Wallet.address == address))
+    ).scalar_one_or_none()
+    if wallet is None:
+        now = datetime.now(tz=UTC)
+        wallet = Wallet(address=address, first_seen_at=now, last_seen_at=now,
+                        is_tracked=True)
+        db.add(wallet)
+    else:
+        wallet.is_tracked = True
+    await db.commit()
+    await db.refresh(wallet)
+    log.info("wallet_tracked", address=address)
+    return wallet
+
+
+@router.delete("/{address}/track", response_model=WalletOut)
+async def untrack_wallet(
+    address: str,
+    db: AsyncSession = Depends(get_db),
+    _user: str | None = Depends(require_auth_if_configured),
+) -> Wallet:
+    """Unstar a wallet. It may still be auto-followed if its confidence
+    clears the copy_auto_follow bar — this only removes the manual pin."""
+    wallet = (
+        await db.execute(select(Wallet).where(Wallet.address == address))
+    ).scalar_one_or_none()
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="wallet not found")
+    wallet.is_tracked = False
+    await db.commit()
+    await db.refresh(wallet)
+    log.info("wallet_untracked", address=address)
+    return wallet
 
 
 @router.get("", response_model=list[WalletOut])

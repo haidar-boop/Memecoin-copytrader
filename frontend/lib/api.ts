@@ -76,7 +76,16 @@ export const api = {
   get: <T>(path: string, query?: Query) => request<T>("GET", path, { query }),
   post: <T>(path: string, body?: unknown, query?: Query) =>
     request<T>("POST", path, { body, query }),
+  del: <T>(path: string, query?: Query) => request<T>("DELETE", path, { query }),
 };
+
+export function trackWallet(address: string): Promise<Wallet> {
+  return api.post<Wallet>("/api/wallets/track", { address });
+}
+
+export function untrackWallet(address: string): Promise<Wallet> {
+  return api.del<Wallet>(`/api/wallets/${address}/track`);
+}
 
 // ---- Typed response shapes (subset of backend pydantic models) ----
 
@@ -103,6 +112,7 @@ export interface Wallet {
 export interface TopWallet {
   address: string;
   wallet_id: number;
+  is_tracked: boolean;
   confidence_score: number | null;
   total_pnl_sol: number | null;
   win_rate: number | null;

@@ -2,7 +2,8 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { api, TopWallet } from "@/lib/api";
+import { api, TopWallet, trackWallet } from "@/lib/api";
+import { StarButton } from "@/components/StarButton";
 import { useApi } from "@/lib/useApi";
 import {
   Section,
@@ -23,6 +24,52 @@ const SORTS: Array<{ key: string; label: string }> = [
   { key: "win_rate", label: "Win rate" },
 ];
 
+function AddWalletBox() {
+  const [address, setAddress] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const addr = address.trim();
+    if (!addr || busy) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await trackWallet(addr);
+      setMessage(`★ Now tracking ${addr.slice(0, 4)}…${addr.slice(-4)}`);
+      setAddress("");
+    } catch (err) {
+      setMessage(
+        `Failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="mb-6 flex flex-wrap items-center gap-2">
+      <input
+        value={address}
+        onChange={(e) => setAddress(e.target.value)}
+        placeholder="Paste a wallet address to star it…"
+        className="input w-full max-w-md font-mono text-sm"
+      />
+      <button type="submit" disabled={busy || !address.trim()} className="btn">
+        ★ Star wallet
+      </button>
+      {message && (
+        <span
+          className={`text-sm ${message.startsWith("Failed") ? "text-bad" : "text-accent"}`}
+        >
+          {message}
+        </span>
+      )}
+    </form>
+  );
+}
+
 export default function WalletsPage() {
   const [by, setBy] = useState("confidence_score");
   const [minClosed, setMinClosed] = useState(0);
@@ -39,6 +86,7 @@ export default function WalletsPage() {
   return (
     <div>
       <h1 className="mb-6 text-2xl font-bold">Wallet Rankings</h1>
+      <AddWalletBox />
       <Section
         title="Tracked wallets"
         right={
@@ -72,6 +120,7 @@ export default function WalletsPage() {
             <thead>
               <tr>
                 <th className="th">#</th>
+                <th className="th">★</th>
                 <th className="th">Wallet</th>
                 <th className="th">Confidence</th>
                 <th className="th">Total PnL</th>
@@ -85,6 +134,9 @@ export default function WalletsPage() {
               {data.map((w, i) => (
                 <tr key={w.wallet_id} className="hover:bg-panel2/50">
                   <td className="td text-muted">{i + 1}</td>
+                  <td className="td">
+                    <StarButton address={w.address} tracked={w.is_tracked} />
+                  </td>
                   <td className="td">
                     <Link
                       href={`/wallets/${w.address}`}
@@ -109,7 +161,7 @@ export default function WalletsPage() {
               ))}
               {data.length === 0 && (
                 <tr>
-                  <td className="td text-muted" colSpan={8}>
+                  <td className="td text-muted" colSpan={9}>
                     No wallets match.
                   </td>
                 </tr>
