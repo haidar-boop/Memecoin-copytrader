@@ -269,6 +269,63 @@ async def test_rug_gate_blocks_and_notifies(
     assert assessment is not None and assessment.hard_blocked is True
 
 
+class StubLiquidityRpc:
+    """Minimal RPC stub exposing only what fetch_liquidity needs."""
+
+    def __init__(self, curve_lamports: int) -> None:
+        self._curve_lamports = curve_lamports
+
+    async def get_balance(self, pubkey: str, budget_exempt: bool | None = None):
+        return self._curve_lamports
+
+    async def get_token_account_balance(self, account: str, budget_exempt: bool | None = None):
+        return None
+
+
+async def test_liquidity_floor_falls_back_to_live_probe_when_unmeasured(
+    db_session: AsyncSession, stub_redis: StubRedis
+) -> None:
+    """A token younger than one snapshot cycle has liquidity_sol=None, which
+    the gate used to read as an automatic fail. With the priority lane
+    surfacing leader buys within seconds, this fired on every fresh token.
+    The evaluator must fall back to a live on-chain reading instead."""
+    from app.db.models import DexPool
+
+    wallet, token = await seed_market(db_session)
+    await db_session.execute(
+        select(TokenSnapshot).where(TokenSnapshot.token_id == token.id)
+    )
+    from sqlalchemy import update
+
+    await db_session.execute(update(TokenSnapshot).values(liquidity_sol=None))
+    db_session.add(
+        DexPool(
+            address="CurveState1111111111111111111111111111111111",
+            dex="pumpfun",
+            token_id=token.id,
+            base_mint=MINT,
+            quote_mint=WSOL_MINT,
+            first_seen_at=NOW,
+        )
+    )
+    await db_session.commit()
+
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    settings = make_settings()
+    trader = CopyTrader(
+        settings, stub_redis, rpc=StubLiquidityRpc(15_000_000_000), session_factory=factory
+    )  # type: ignore[arg-type]
+    trader._executor._jupiter = JupiterClient("http://test", FakeJupiterFetch())
+
+    evaluation = await trader.handle_message(buy_message())
+    assert evaluation is not None
+    liquidity_gate = next(
+        r for r in evaluation.reasons if r["gate"] == "liquidity_floor"
+    )
+    assert liquidity_gate["passed"] is True
+    assert "live probe" in liquidity_gate["note"]
+
+
 async def test_unknown_mcap_passes_by_default(db_session: AsyncSession, stub_redis: StubRedis) -> None:
     """A token whose supply was never backfilled (mcap None) must still be
     copyable — fail-on-unknown silently blocked every fresh token."""

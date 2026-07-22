@@ -22,6 +22,7 @@ from app.config import Settings
 from app.decision.evaluator import Evaluation, Evaluator, LeaderBuy
 from app.decision.safety import SafetyGuard
 from app.decision.token_risk import TokenRiskEngine
+from app.enrichment.liquidity import fetch_liquidity
 from app.enrichment.token_security import TokenSecurityProbe
 from app.execution.executor import CopyExecutor
 from app.ingestion.programs import WSOL_MINT
@@ -78,7 +79,22 @@ class CopyTrader:
                 session, token, lambda: probe.probe(session, token)
             )
 
-        self._evaluator = Evaluator(settings, redis, self._guard, risk_assessor=_assess)
+        # Live fallback when the 60s snapshot cycle hasn't measured a token
+        # yet — the priority lane can surface a leader's buy within seconds
+        # of a token's first trade. Budget-exempt: it gates a live decision,
+        # same as the rug probe above, and volume is one token per copy eval.
+        async def _liquidity(session: AsyncSession, token) -> float | None:
+            result = await fetch_liquidity(session, rpc, [token.id], budget_exempt=True)
+            value = result.get(token.id)
+            return float(value) if value is not None else None
+
+        self._evaluator = Evaluator(
+            settings,
+            redis,
+            self._guard,
+            risk_assessor=_assess,
+            liquidity_assessor=_liquidity,
+        )
         self._executor = CopyExecutor(settings, redis, rpc, self._guard)
 
     async def run(self) -> None:

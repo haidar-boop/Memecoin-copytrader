@@ -104,6 +104,21 @@ async def test_hard_block_paths(db_session, stub_redis, signal_overrides, reason
     assert verdict.score < 100.0
 
 
+async def test_bonding_curve_mint_authority_not_hard_blocked(db_session, stub_redis):
+    """A pump.fun bonding-curve token's mint authority is the curve PDA
+    itself (held until migration so the program can mint the graduation
+    chunk) — not an EOA that can print supply at will. Hard-blocking it
+    would reject essentially every pre-migration pump.fun token."""
+    token = await make_token(db_session)
+    probe = CountingProbe(
+        safe_signals(mint_authority="CurvePda111", is_bonding_curve=True)
+    )
+    verdict = await engine(stub_redis).assess(db_session, token, probe)
+    assert "mint_authority_active" not in verdict.blocked_reasons
+    # Still penalized in the soft score, just not a structural veto.
+    assert component(verdict, "authority").score == 100.0
+
+
 async def test_fail_open_unknown_authority_not_blocked(db_session, stub_redis):
     token = await make_token(db_session)
     probe = CountingProbe(safe_signals(mint_authority=None, freeze_authority=None))

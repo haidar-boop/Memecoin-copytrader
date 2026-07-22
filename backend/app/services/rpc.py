@@ -266,8 +266,14 @@ class SolanaRpc:
             budget_exempt=budget_exempt,
         )
 
-    async def get_balance(self, pubkey: str) -> int | None:
-        result = await self.call("getBalance", [pubkey, {"commitment": "confirmed"}])
+    async def get_balance(
+        self, pubkey: str, budget_exempt: bool | None = None
+    ) -> int | None:
+        result = await self.call(
+            "getBalance",
+            [pubkey, {"commitment": "confirmed"}],
+            budget_exempt=budget_exempt,
+        )
         return None if result is None else int(result.get("value", 0))
 
     async def get_account_info(
@@ -301,8 +307,14 @@ class SolanaRpc:
         )
         return None if result is None else result.get("value")
 
-    async def get_token_account_balance(self, account: str) -> dict | None:
-        result = await self.call("getTokenAccountBalance", [account, {"commitment": "confirmed"}])
+    async def get_token_account_balance(
+        self, account: str, budget_exempt: bool | None = None
+    ) -> dict | None:
+        result = await self.call(
+            "getTokenAccountBalance",
+            [account, {"commitment": "confirmed"}],
+            budget_exempt=budget_exempt,
+        )
         return None if result is None else result.get("value")
 
     async def get_token_largest_accounts(

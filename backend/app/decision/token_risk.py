@@ -212,7 +212,18 @@ class TokenRiskEngine:
         """Structural red flags, config-driven and weight-independent."""
         s = self._settings
         reasons: list[str] = []
-        if s.rug_block_mint_authority and signals.mint_authority:
+        # A pump.fun bonding-curve token's mint authority is the curve PDA
+        # itself, held until migration purely so the program can mint the
+        # last chunk on graduation to Raydium — it cannot be misused by the
+        # deployer the way an EOA-held mint authority can. Hard-blocking it
+        # would reject essentially every pre-migration pump.fun token, i.e.
+        # the entire population leaders trade. It still counts against the
+        # soft authority score below, just not as a structural veto.
+        if (
+            s.rug_block_mint_authority
+            and signals.mint_authority
+            and not signals.is_bonding_curve
+        ):
             reasons.append("mint_authority_active")
         if s.rug_block_freeze_authority and signals.freeze_authority:
             reasons.append("freeze_authority_active")

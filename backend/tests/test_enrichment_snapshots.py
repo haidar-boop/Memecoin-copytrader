@@ -64,10 +64,14 @@ class StubRpc:
         self.accounts: dict[str, dict] = {}
         self.multiple_calls: list[list[str]] = []
 
-    async def get_balance(self, pubkey: str) -> int | None:
+    async def get_balance(
+        self, pubkey: str, budget_exempt: bool | None = None
+    ) -> int | None:
         return self.balances.get(pubkey)
 
-    async def get_token_account_balance(self, account: str) -> dict | None:
+    async def get_token_account_balance(
+        self, account: str, budget_exempt: bool | None = None
+    ) -> dict | None:
         return self.vault_balances.get(account)
 
     async def get_program_accounts_count(

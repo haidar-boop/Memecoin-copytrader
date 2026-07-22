@@ -96,6 +96,7 @@ async def _latest_snapshots(
 
 
 RiskAssessor = Callable[[AsyncSession, Token], Awaitable[RiskVerdict]]
+LiquidityAssessor = Callable[[AsyncSession, Token], Awaitable[float | None]]
 
 
 class Evaluator:
@@ -105,6 +106,7 @@ class Evaluator:
         redis: Any,
         guard: SafetyGuard,
         risk_assessor: RiskAssessor | None = None,
+        liquidity_assessor: LiquidityAssessor | None = None,
     ):
         self._settings = settings
         self._redis = redis
@@ -112,6 +114,10 @@ class Evaluator:
         # Pre-copy structural rug assessment (wired by the copytrader worker,
         # which owns the RPC client). None = evaluation-only context.
         self._risk_assessor = risk_assessor
+        # Live fallback for tokens the 60s snapshot cycle hasn't measured yet
+        # (the priority lane can surface a token within seconds of creation).
+        # None = evaluation-only context (e.g. offline backtests).
+        self._liquidity_assessor = liquidity_assessor
 
     async def evaluate_buy(self, session: AsyncSession, event: LeaderBuy) -> Evaluation:
         settings = self._settings
@@ -202,6 +208,16 @@ class Evaluator:
         )
 
         liquidity = to_float(latest.liquidity_sol) if latest else None
+        liquidity_note = None
+        if liquidity is None and self._liquidity_assessor is not None:
+            try:
+                liquidity = await self._liquidity_assessor(session, token)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("liquidity_assessor_failed", mint=token.mint)
+                liquidity = None
+            else:
+                if liquidity is not None:
+                    liquidity_note = "live probe (no snapshot yet)"
         volume_1h = to_float(latest.volume_sol_1h) if latest else None
         holder_growth = None
         if (
@@ -394,7 +410,8 @@ class Evaluator:
             gate(
                 "liquidity_floor",
                 liquidity is not None and liquidity >= settings.copy_min_liquidity_sol,
-                f"{liquidity} SOL vs min {settings.copy_min_liquidity_sol}",
+                f"{liquidity} SOL vs min {settings.copy_min_liquidity_sol}"
+                + (f" ({liquidity_note})" if liquidity_note else ""),
             ),
             gate(
                 "market_cap_band",

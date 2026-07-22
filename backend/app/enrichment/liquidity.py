@@ -29,20 +29,28 @@ log = get_logger(__name__)
 
 
 class _Rpc(Protocol):
-    async def get_balance(self, pubkey: str) -> int | None: ...
+    async def get_balance(
+        self, pubkey: str, budget_exempt: bool | None = None
+    ) -> int | None: ...
 
-    async def get_token_account_balance(self, account: str) -> dict | None: ...
+    async def get_token_account_balance(
+        self, account: str, budget_exempt: bool | None = None
+    ) -> dict | None: ...
 
 
-async def _pool_liquidity_sol(rpc: _Rpc, pool: DexPool) -> Decimal | None:
+async def _pool_liquidity_sol(
+    rpc: _Rpc, pool: DexPool, budget_exempt: bool | None = None
+) -> Decimal | None:
     """SOL depth of one pool, or None when it cannot be measured."""
     if pool.dex == Dex.PUMPFUN.value:
-        lamports = await rpc.get_balance(pool.address)
+        lamports = await rpc.get_balance(pool.address, budget_exempt=budget_exempt)
         if lamports is None:
             return None
         return Decimal(int(lamports)) / LAMPORTS_PER_SOL
     if pool.quote_vault and pool.quote_mint == WSOL_MINT:
-        value = await rpc.get_token_account_balance(pool.quote_vault)
+        value = await rpc.get_token_account_balance(
+            pool.quote_vault, budget_exempt=budget_exempt
+        )
         ui_amount = (value or {}).get("uiAmountString")
         if ui_amount is None:
             return None
@@ -54,7 +62,10 @@ async def _pool_liquidity_sol(rpc: _Rpc, pool: DexPool) -> Decimal | None:
 
 
 async def fetch_liquidity(
-    session: AsyncSession, rpc: _Rpc, token_ids: Sequence[int]
+    session: AsyncSession,
+    rpc: _Rpc,
+    token_ids: Sequence[int],
+    budget_exempt: bool | None = None,
 ) -> dict[int, Decimal]:
     """Map token_id -> SOL liquidity of its deepest measurable pool.
 
@@ -75,7 +86,7 @@ async def fetch_liquidity(
     result: dict[int, Decimal] = {}
     for pool in pools:
         try:
-            sol = await _pool_liquidity_sol(rpc, pool)
+            sol = await _pool_liquidity_sol(rpc, pool, budget_exempt=budget_exempt)
         except Exception as exc:
             log.warning("liquidity_probe_failed", pool=pool.address, error=str(exc))
             continue
