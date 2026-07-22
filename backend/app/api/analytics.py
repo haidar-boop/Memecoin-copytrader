@@ -19,6 +19,7 @@ from app.db.models import (
     StrategyStat,
     Wallet,
     WalletStats,
+    WalletVetting,
 )
 from app.logging_config import get_logger
 
@@ -79,6 +80,9 @@ class TopWalletOut(BaseModel):
     closed_position_count: int
     style: str | None
     computed_at: datetime
+    # Latest fake-wallet vetting verdict ("clear" | "suspicious" |
+    # "inconclusive"); None when the wallet was never vetted.
+    vetting_verdict: str | None = None
 
 
 class WalletStatsSnapshotOut(BaseModel):
@@ -181,6 +185,7 @@ async def top_wallets(
     if min_closed > 0:
         stmt = stmt.where(WalletStats.closed_position_count >= min_closed)
     rows = (await db.execute(stmt)).all()
+    verdicts = await _latest_verdicts(db, [ws.wallet_id for ws, _, _ in rows])
     return [
         TopWalletOut(
             address=address,
@@ -193,9 +198,45 @@ async def top_wallets(
             closed_position_count=ws.closed_position_count,
             style=ws.style,
             computed_at=ws.computed_at,
+            vetting_verdict=verdicts.get(ws.wallet_id),
         )
         for ws, address, is_tracked in rows
     ]
+
+
+async def _latest_verdicts(
+    db: AsyncSession, wallet_ids: list[int]
+) -> dict[int, str]:
+    """Latest vetting verdict per wallet in ONE bounded query.
+
+    wallet_vettings is append-only, so "latest" is the max-``ts`` row per
+    wallet (group-by join — SQLite-compatible, unlike DISTINCT ON). A ts tie
+    is broken by insertion order: rows are read ``id`` ascending and the dict
+    keeps the last write, so the newest row wins.
+    """
+    if not wallet_ids:
+        return {}
+    latest_ts = (
+        select(
+            WalletVetting.wallet_id.label("wallet_id"),
+            func.max(WalletVetting.ts).label("max_ts"),
+        )
+        .where(WalletVetting.wallet_id.in_(wallet_ids))
+        .group_by(WalletVetting.wallet_id)
+        .subquery()
+    )
+    rows = (
+        await db.execute(
+            select(WalletVetting.wallet_id, WalletVetting.verdict)
+            .join(
+                latest_ts,
+                (WalletVetting.wallet_id == latest_ts.c.wallet_id)
+                & (WalletVetting.ts == latest_ts.c.max_ts),
+            )
+            .order_by(WalletVetting.id)
+        )
+    ).all()
+    return {wallet_id: verdict for wallet_id, verdict in rows}
 
 
 @router.get("/strategies", response_model=list[StrategyClusterOut])

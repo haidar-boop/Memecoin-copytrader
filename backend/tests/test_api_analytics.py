@@ -22,6 +22,7 @@ from app.db.models import (
     Wallet,
     WalletStats,
     WalletStatsSnapshot,
+    WalletVetting,
 )
 from app.main import create_app
 
@@ -169,6 +170,25 @@ async def _seed(session: AsyncSession) -> None:
             DiscoveredPattern(
                 kind="lifecycle", key={"bucket": "launch"}, stats={"wr": 0.3}, evidence_count=9,
                 computed_at=OLD,
+            ),
+        ]
+    )
+    # Vetting history for wallet 1: an old "clear" superseded by a newer
+    # "suspicious" — endpoints must surface the LATEST verdict only.
+    session.add_all(
+        [
+            WalletVetting(
+                wallet_id=1, ts=OLD, verdict="clear", engine_version="v1"
+            ),
+            WalletVetting(
+                wallet_id=1,
+                ts=NOW - timedelta(hours=1),
+                verdict="suspicious",
+                reasons=["repeat_cast"],
+                engine_version="v1",
+            ),
+            WalletVetting(
+                wallet_id=3, ts=OLD, verdict="inconclusive", engine_version="v1"
             ),
         ]
     )
@@ -329,6 +349,46 @@ async def test_models_registry_hides_artifact_path(client: httpx.AsyncClient) ->
     for m in body:
         assert "artifact_path" not in m
         assert "/secret" not in resp.text
+
+
+async def test_top_wallets_include_latest_vetting_verdict(
+    client: httpx.AsyncClient,
+) -> None:
+    resp = await client.get(
+        "/api/analytics/wallets/top", params={"by": "total_pnl_sol"}
+    )
+    assert resp.status_code == 200
+    by_addr = {row["address"]: row for row in resp.json()}
+    # Wallet 1 has two vetting rows; the newer "suspicious" must win over the
+    # older "clear".
+    assert by_addr["AAA"]["vetting_verdict"] == "suspicious"
+    assert by_addr["CCC"]["vetting_verdict"] == "inconclusive"
+    # Never vetted -> explicit None, not a missing key.
+    assert by_addr["BBB"]["vetting_verdict"] is None
+
+
+async def test_wallet_detail_includes_latest_vetting_verdict(
+    client: httpx.AsyncClient,
+) -> None:
+    resp = await client.get("/api/wallets/AAA")
+    assert resp.status_code == 200
+    assert resp.json()["vetting_verdict"] == "suspicious"
+
+    # Never vetted -> None.
+    resp = await client.get("/api/wallets/BBB")
+    assert resp.json()["vetting_verdict"] is None
+
+
+async def test_wallet_list_leaves_vetting_verdict_none(
+    client: httpx.AsyncClient,
+) -> None:
+    # The list endpoint deliberately does not stitch verdicts (documented);
+    # every row still carries the field so clients get a stable shape.
+    resp = await client.get("/api/wallets", params={"limit": 10})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body, "seeded wallets expected"
+    assert all(row["vetting_verdict"] is None for row in body)
 
 
 async def test_openapi_includes_new_paths(client: httpx.AsyncClient) -> None:

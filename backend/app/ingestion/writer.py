@@ -28,12 +28,17 @@ from app.db.models import (
     Transaction,
     Wallet,
 )
-from app.ingestion.events import Side, SwapEvent
+from app.ingestion.events import Dex, Side, SwapEvent
 from app.ingestion.parsers import util
 from app.ingestion.programs import STABLE_MINTS, WSOL_MINT
 from app.logging_config import get_logger
 
 log = get_logger(__name__)
+
+# pump.fun's token-creation instruction logs exactly this line; the fee payer
+# of such a transaction is the token's creator. Exact-entry match (not
+# substring) so "CreateIdempotent" and friends never false-positive.
+PUMPFUN_CREATE_LOG = "Program log: Instruction: Create"
 
 # A position is closed once the remaining balance is below this fraction of
 # everything bought (wallets rarely sell the exact dust-level remainder).
@@ -95,6 +100,21 @@ async def upsert_token(session: AsyncSession, mint: str, seen_at: datetime, dex:
     else:
         token.first_seen_at = min(_aware(token.first_seen_at), seen_at)
     return token.id
+
+
+async def _set_token_creator_if_unset(
+    session: AsyncSession, token_id: int, creator: str
+) -> None:
+    """Record the pump.fun creator, first writer wins.
+
+    The creator is derived from the creation transaction itself, so a later
+    trade must never overwrite it — replays and out-of-order ingestion would
+    otherwise stamp a random buyer as the creator.
+    """
+    token = await session.get(Token, token_id)
+    if token is not None and token.creator is None:
+        token.creator = creator
+        await session.flush()
 
 
 async def get_or_create_pool(
@@ -336,6 +356,7 @@ async def persist_parsed_transaction(
 
     await insert_transaction(session, tx, payer_wallet_id, store_raw=store_raw)
 
+    is_pumpfun_create = PUMPFUN_CREATE_LOG in util.log_messages(tx)
     new_events: list[SwapEvent] = []
     for event in events:
         wallet_id = (
@@ -344,6 +365,8 @@ async def persist_parsed_transaction(
             else await upsert_wallet(session, event.wallet, seen_at)
         )
         token_id = await upsert_token(session, event.token_mint, seen_at, event.dex.value)
+        if event.dex == Dex.PUMPFUN and is_pumpfun_create and payer:
+            await _set_token_creator_if_unset(session, token_id, payer)
         pool_id = await get_or_create_pool(session, event, token_id, seen_at)
         if await insert_trade(session, event, wallet_id, token_id, pool_id, sol_price_usd):
             await update_position(session, event, wallet_id, token_id, sol_price_usd)

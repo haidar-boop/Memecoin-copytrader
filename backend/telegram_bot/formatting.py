@@ -182,9 +182,12 @@ def format_top_wallets(rows: Iterable[dict[str, Any]]) -> str:
         pnl = row.get("total_pnl_sol")
         win = row.get("win_rate")
         win_txt = f", win {float(win) * 100:.0f}%" if win is not None else ""
+        # Suspicious wallets stay listed (hiding them would silently shrink
+        # the leaderboard) but carry an explicit flag.
+        flag = " ⚠️ FLAGGED" if row.get("vetting_verdict") == "suspicious" else ""
         lines.append(
             f"{i}. {_short(row.get('address'))} — conf {_fmt_sol(conf)}"
-            f", PnL {_fmt_sol(pnl)} SOL{win_txt}"
+            f", PnL {_fmt_sol(pnl)} SOL{win_txt}{flag}"
         )
     return "\n".join(lines)
 

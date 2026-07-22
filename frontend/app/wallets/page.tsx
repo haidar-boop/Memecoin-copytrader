@@ -200,6 +200,14 @@ export default function WalletsPage() {
                     >
                       {shortAddr(w.address, 6)}
                     </Link>
+                    {w.vetting_verdict === "suspicious" && (
+                      <span
+                        title="Flagged as possible fake/ring wallet"
+                        className="ml-1 cursor-help"
+                      >
+                        ⚠️
+                      </span>
+                    )}
                   </td>
                   <td className="td">{fmtNum(w.confidence_score, 3)}</td>
                   <td className="td">

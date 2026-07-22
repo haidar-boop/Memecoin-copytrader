@@ -18,6 +18,11 @@ class WalletOut(BaseModel):
     is_tracked: bool
     label: str | None
     sol_balance_lamports: int | None
+    # Latest fake-wallet vetting verdict ("clear" | "suspicious" |
+    # "inconclusive"). Populated by GET /api/wallets/{address}; the list
+    # endpoint leaves it None (a per-row lookup there would N+1 the page),
+    # and None also means "never vetted".
+    vetting_verdict: str | None = None
 
 
 class TokenOut(BaseModel):

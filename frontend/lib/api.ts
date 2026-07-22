@@ -107,6 +107,9 @@ export interface Wallet {
   is_tracked: boolean;
   label: string | null;
   sol_balance_lamports: number | null;
+  // "clear" | "suspicious" | "inconclusive"; null = never vetted.
+  // Populated on the detail endpoint; the list endpoint leaves it null.
+  vetting_verdict: string | null;
 }
 
 export interface TopWallet {
@@ -120,6 +123,8 @@ export interface TopWallet {
   closed_position_count: number;
   style: string | null;
   computed_at: string;
+  // "clear" | "suspicious" | "inconclusive"; null = never vetted.
+  vetting_verdict: string | null;
 }
 
 export interface WalletStats {

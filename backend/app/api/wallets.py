@@ -14,7 +14,15 @@ from app.api.analytics import WalletStatsOut, WalletStatsSnapshotOut
 from app.api.deps import get_db, get_redis
 from app.api.schemas import PositionOut, TradeOut, WalletOut
 from app.auth.deps import require_auth
-from app.db.models import Position, Token, Trade, Wallet, WalletStats, WalletStatsSnapshot
+from app.db.models import (
+    Position,
+    Token,
+    Trade,
+    Wallet,
+    WalletStats,
+    WalletStatsSnapshot,
+    WalletVetting,
+)
 from app.logging_config import get_logger
 from app.services.redis import get_followed_wallets, set_followed_wallets
 
@@ -126,6 +134,12 @@ async def list_wallets(
     tracked_only: bool = False,
     db: AsyncSession = Depends(get_db),
 ) -> list[Wallet]:
+    """List wallets, most recently seen first.
+
+    ``vetting_verdict`` is deliberately left None here — stitching the latest
+    verdict onto every row of a paged list isn't worth the extra query for a
+    field the UI only surfaces on rankings and the detail page.
+    """
     stmt = select(Wallet).order_by(Wallet.last_seen_at.desc()).limit(limit).offset(offset)
     if tracked_only:
         stmt = stmt.where(Wallet.is_tracked.is_(True))
@@ -133,13 +147,24 @@ async def list_wallets(
 
 
 @router.get("/{address}", response_model=WalletOut)
-async def get_wallet(address: str, db: AsyncSession = Depends(get_db)) -> Wallet:
+async def get_wallet(address: str, db: AsyncSession = Depends(get_db)) -> WalletOut:
     wallet = (
         await db.execute(select(Wallet).where(Wallet.address == address))
     ).scalar_one_or_none()
     if wallet is None:
         raise HTTPException(status_code=404, detail="wallet not found")
-    return wallet
+    # Latest vetting verdict (append-only table); None = never vetted.
+    verdict = (
+        await db.execute(
+            select(WalletVetting.verdict)
+            .where(WalletVetting.wallet_id == wallet.id)
+            .order_by(WalletVetting.ts.desc(), WalletVetting.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    out = WalletOut.model_validate(wallet)
+    out.vetting_verdict = verdict
+    return out
 
 
 @router.get("/{address}/trades", response_model=list[TradeOut])

@@ -111,6 +111,12 @@ export default function WalletDetailPage() {
           )}
           <span>{address}</span>
         </h1>
+        {wallet.data?.vetting_verdict === "suspicious" && (
+          <div className="mt-2 rounded-lg border border-bad/50 bg-bad/10 px-3 py-2 text-sm text-bad">
+            ⚠️ Flagged as possible fake/ring wallet — auto-follow blocked;
+            starring overrides at your own risk.
+          </div>
+        )}
         {wallet.data && isTracked && (
           <div className="mt-1 text-xs text-amber-400">
             Tracked — the copy engine follows this wallet&apos;s buys.

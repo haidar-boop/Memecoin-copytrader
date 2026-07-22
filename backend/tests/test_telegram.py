@@ -402,6 +402,87 @@ def test_format_top_wallets_and_trades_empty_and_rows() -> None:
     assert "BUY" in line and "1.5000" in line and "12m ago" in line
 
 
+def test_format_top_wallets_marks_suspicious_rows() -> None:
+    from telegram_bot.formatting import format_top_wallets
+
+    text = format_top_wallets(
+        [
+            {
+                "address": "SusWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "confidence_score": 91.0,
+                "total_pnl_sol": 40.0,
+                "win_rate": 0.7,
+                "vetting_verdict": "suspicious",
+            },
+            {
+                "address": "CleanWalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                "confidence_score": 82.1,
+                "total_pnl_sol": 12.5,
+                "win_rate": 0.61,
+                "vetting_verdict": "clear",
+            },
+            {
+                "address": "UnvettedWalletCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+                "confidence_score": 70.0,
+                "total_pnl_sol": 1.0,
+                "win_rate": None,
+            },
+        ]
+    )
+    lines = text.splitlines()
+    assert lines[1].endswith("⚠️ FLAGGED")  # suspicious row carries the marker
+    assert "FLAGGED" not in lines[2]  # clear
+    assert "FLAGGED" not in lines[3]  # never vetted
+
+
+@pytest.mark.asyncio
+async def test_wallets_text_flags_suspicious_wallet(session_factory) -> None:
+    from datetime import timedelta
+
+    from app.db.models import Wallet, WalletStats, WalletVetting
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                Wallet(id=1, address="SusWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                       first_seen_at=now, last_seen_at=now),
+                Wallet(id=2, address="CleanWalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                       first_seen_at=now, last_seen_at=now),
+            ]
+        )
+        for wallet_id, conf in ((1, Decimal("90")), (2, Decimal("80"))):
+            session.add(
+                WalletStats(
+                    wallet_id=wallet_id,
+                    computed_at=now,
+                    trade_count=10,
+                    buy_count=5,
+                    sell_count=5,
+                    position_count=5,
+                    closed_position_count=5,
+                    win_count=3,
+                    confidence_score=conf,
+                )
+            )
+        # Older clear verdict superseded by suspicious — latest must win.
+        session.add_all(
+            [
+                WalletVetting(wallet_id=1, ts=now - timedelta(days=1),
+                              verdict="clear", engine_version="v1"),
+                WalletVetting(wallet_id=1, ts=now, verdict="suspicious",
+                              engine_version="v1"),
+            ]
+        )
+        await session.commit()
+
+    notifier = TelegramNotifier(Settings(telegram_chat_id="1"), _StubRedis(), session_factory)
+    text = await notifier.wallets_text()
+    lines = text.splitlines()
+    assert lines[1].startswith("1.") and lines[1].endswith("⚠️ FLAGGED")
+    assert lines[2].startswith("2.") and "FLAGGED" not in lines[2]
+
+
 @pytest.mark.asyncio
 async def test_resume_restricted_to_operator_chat() -> None:
     calls: list[str] = []

@@ -26,7 +26,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.db.models import CopyPosition, Report, Token, Trade, Wallet, WalletStats
+from app.db.models import (
+    CopyPosition,
+    Report,
+    Token,
+    Trade,
+    Wallet,
+    WalletStats,
+    WalletVetting,
+)
 from app.decision.safety import EMERGENCY_STOP_KEY, SafetyGuard
 from app.logging_config import get_logger
 from app.services.redis import NOTIFICATIONS_CHANNEL
@@ -240,6 +248,7 @@ class TelegramNotifier:
             rows = (
                 await session.execute(
                     select(
+                        WalletStats.wallet_id,
                         Wallet.address,
                         WalletStats.confidence_score,
                         WalletStats.total_pnl_sol,
@@ -251,15 +260,52 @@ class TelegramNotifier:
                     .limit(limit)
                 )
             ).all()
+            verdicts = await self._latest_verdicts(
+                session, [wallet_id for wallet_id, *_ in rows]
+            )
         return format_top_wallets(
             {
                 "address": address,
                 "confidence_score": conf,
                 "total_pnl_sol": pnl,
                 "win_rate": win,
+                "vetting_verdict": verdicts.get(wallet_id),
             }
-            for address, conf, pnl, win in rows
+            for wallet_id, address, conf, pnl, win in rows
         )
+
+    @staticmethod
+    async def _latest_verdicts(
+        session: AsyncSession, wallet_ids: list[int]
+    ) -> dict[int, str]:
+        """Latest vetting verdict per wallet — a ranked wallet may be a ring
+        member flagged AFTER it climbed the leaderboard, so the chat card must
+        carry the flag too, not just the web UI."""
+        if not wallet_ids:
+            return {}
+        latest_ts = (
+            select(
+                WalletVetting.wallet_id.label("wallet_id"),
+                func.max(WalletVetting.ts).label("max_ts"),
+            )
+            .where(WalletVetting.wallet_id.in_(wallet_ids))
+            .group_by(WalletVetting.wallet_id)
+            .subquery()
+        )
+        rows = (
+            await session.execute(
+                select(WalletVetting.wallet_id, WalletVetting.verdict)
+                .join(
+                    latest_ts,
+                    (WalletVetting.wallet_id == latest_ts.c.wallet_id)
+                    & (WalletVetting.ts == latest_ts.c.max_ts),
+                )
+                # ts ties resolve by insertion order: the dict keeps the last
+                # write, i.e. the highest id.
+                .order_by(WalletVetting.id)
+            )
+        ).all()
+        return {wallet_id: verdict for wallet_id, verdict in rows}
 
     async def trades_text(self, limit: int = 5) -> str:
         from datetime import UTC, datetime
