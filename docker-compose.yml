@@ -12,6 +12,7 @@ x-backend-env: &backend-env
   # firehose instead of falling permanently behind a FIFO backlog. Size it
   # to ~30-60s of inflow for real-time copy trading.
   INGEST_STREAM_MAXLEN: ${INGEST_STREAM_MAXLEN:-1000000}
+  INGEST_PRIORITY_MAXLEN: ${INGEST_PRIORITY_MAXLEN:-5000}
   ENABLED_DEXES: ${ENABLED_DEXES:-["pumpfun","pumpswap","raydium_amm","raydium_clmm","raydium_cpmm","orca_whirlpool","jupiter"]}
   VETTING_ENABLED: ${VETTING_ENABLED:-true}
   VETTING_BLOCK_SUSPICIOUS: ${VETTING_BLOCK_SUSPICIOUS:-true}
@@ -35,6 +36,9 @@ x-backend-env: &backend-env
   COPY_MIN_MARKET_CAP_USD: ${COPY_MIN_MARKET_CAP_USD:-10000}
   COPY_MAX_MARKET_CAP_USD: ${COPY_MAX_MARKET_CAP_USD:-50000000}
   COPY_REQUIRE_MARKET_CAP: ${COPY_REQUIRE_MARKET_CAP:-false}
+  FOLLOW_LANE_ENABLED: ${FOLLOW_LANE_ENABLED:-true}
+  FOLLOW_LANE_MAX: ${FOLLOW_LANE_MAX:-50}
+  FOLLOW_LANE_REFRESH_SECONDS: ${FOLLOW_LANE_REFRESH_SECONDS:-60}
   COPY_SIZE_MODE: ${COPY_SIZE_MODE:-fixed}
   COPY_FIXED_SOL: ${COPY_FIXED_SOL:-0.05}
   COPY_PERCENT_OF_LEADER: ${COPY_PERCENT_OF_LEADER:-2.0}
