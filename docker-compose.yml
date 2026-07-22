@@ -10,6 +10,12 @@ x-backend-env: &backend-env
   RUG_CHECK_ENABLED: ${RUG_CHECK_ENABLED:-true}
   RUG_MAX_SCORE: ${RUG_MAX_SCORE:-60}
   RUG_FAIL_CLOSED: ${RUG_FAIL_CLOSED:-true}
+  # Every service that can REPORT status (telegram, api) or GATE on these
+  # must see the same values as the copytrader worker that acts on them —
+  # otherwise /status and the dashboard silently show stale defaults
+  # regardless of what .env actually says.
+  COPY_ENABLED: ${COPY_ENABLED:-false}
+  COPY_MODE: ${COPY_MODE:-paper}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 x-backend-service: &backend-service
@@ -124,10 +130,9 @@ services:
       <<: *backend-env
       METRICS_PORT: "9105"
       ML_MODEL_DIR: /srv/backend/models
-      # Copy trading is OFF by default. Even enabled, COPY_MODE defaults to
-      # paper; live requires COPY_MODE=live plus TRADING_WALLET_SECRET.
-      COPY_ENABLED: "${COPY_ENABLED:-false}"
-      COPY_MODE: "${COPY_MODE:-paper}"
+      # COPY_ENABLED/COPY_MODE come from the shared anchor now (every
+      # status-reporting service needs them, not just this one). Live
+      # trading additionally requires COPY_MODE=live plus this secret.
       TRADING_WALLET_SECRET: "${TRADING_WALLET_SECRET:-}"
       ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
     command: ["python", "-m", "workers.run_copytrader"]
