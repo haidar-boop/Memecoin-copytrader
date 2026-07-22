@@ -259,8 +259,14 @@ async def test_compute_model_performance_signal_and_gate(db_session):
 
 @pytest.mark.asyncio
 async def test_prediction_matches_own_episode_not_prior_reentry(db_session):
-    """A re-entering wallet's OLD episode must not be attributed to a new
-    prediction whose own episode closes beyond the horizon."""
+    """Re-entry matching mirrors the TRAINING labeling rule.
+
+    dataset.build_trade_profit_dataset labels a buy with the wallet's
+    earliest close after it within the horizon — including an overlapping
+    prior episode that closes soon after. The model learned that label, so
+    evaluation must attribute the same episode or AUC/Brier are computed
+    against answers the model was never taught.
+    """
     model_id = await _model(db_session, "trade_profit", 1)
     # Old episode: opened 10h before the prediction, closed 1h after it (a big
     # win). New episode: opened at the prediction time, closes 30h later
@@ -287,7 +293,11 @@ async def test_prediction_matches_own_episode_not_prior_reentry(db_session):
     resolved = await resolve_outcomes(
         db_session, label_horizon_hours=24, batch=1000, now=NOW
     )
-    # The prediction's own episode closed beyond the horizon, so it stays
-    # UNRESOLVED — the old winning episode is NOT stolen.
-    assert resolved == 0
-    assert (await db_session.execute(select(func.count()).select_from(PredictionOutcome))).scalar() == 0
+    # Earliest close after the prediction within the horizon = the prior
+    # episode's +5 win — exactly what the training label for this buy would
+    # have been. One outcome, attributed to that episode.
+    assert resolved == 1
+    outcome = (
+        await db_session.execute(select(PredictionOutcome))
+    ).scalar_one()
+    assert outcome.actual_label == 1  # the winning close, per training rule

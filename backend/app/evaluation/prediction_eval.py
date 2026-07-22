@@ -123,18 +123,22 @@ async def resolve_outcomes(
         episodes = positions_by_pair.get(
             (prediction.wallet_id, prediction.token_id), []
         )
-        # A prediction is ABOUT the episode active at the buy that triggered
-        # it — the one whose open time is nearest the prediction. Picking the
-        # earliest close after the prediction instead would attribute a
-        # re-entering wallet's PRIOR episode to a new prediction. Resolve only
-        # when THAT episode closed within the horizon; otherwise leave the
-        # prediction unresolved (a later close can still resolve it).
-        match = min(
-            episodes,
-            key=lambda pos: abs((aware(pos.opened_at) - created).total_seconds()),
-            default=None,
+        # Match with the SAME rule the training labels use (dataset.py:
+        # earliest close after the buy within the horizon) — the model is
+        # graded against the label semantics it learned, or AUC/Brier drift
+        # for re-entering wallets. Closes before the prediction are excluded
+        # by construction, so a prior episode can never be attributed here,
+        # and unlike a single nearest-open candidate this scans every
+        # episode, so a resolvable prediction is never skipped.
+        match = next(
+            (
+                pos
+                for pos in episodes  # pre-sorted by closed_at
+                if created < aware(pos.closed_at) <= deadline
+            ),
+            None,
         )
-        if match is None or not (created < aware(match.closed_at) <= deadline):
+        if match is None:
             continue
 
         predicted = prediction.predicted or {}

@@ -240,3 +240,37 @@ async def test_features_carry_all_numbers(db_session):
     ):
         assert key in f
     assert regime.description
+
+
+async def test_hysteresis_holds_bull_inside_band(db_session):
+    """A prior bull label sticks while the trend hovers inside the band,
+    and releases once it decays past the hysteresis margin."""
+    from app.evaluation.regime import HYSTERESIS_PCT, _trend_label
+
+    # Pure-function edges first (the DB path below covers integration).
+    assert _trend_label(BULL_PCT - 0.5, "bull") == "bull"       # inside band
+    assert _trend_label(BULL_PCT - HYSTERESIS_PCT, "bull") == "sideways"
+    assert _trend_label(BEAR_PCT + 0.5, "bear") == "bear"
+    assert _trend_label(BEAR_PCT + HYSTERESIS_PCT, "bear") == "sideways"
+    # Entering still requires a full threshold cross.
+    assert _trend_label(BULL_PCT - 0.5, "sideways") == "sideways"
+    assert _trend_label(None, "bull") == "sideways"
+
+    # Integration: previous bull row + a +2.5% series stays bull.
+    db_session.add(
+        MarketRegime(
+            ts=NOW - timedelta(minutes=WINDOW_MINUTES),
+            window_minutes=WINDOW_MINUTES,
+            regime="bull",
+        )
+    )
+    await db_session.commit()
+    await _seed_price_series(db_session, list(np.linspace(100.0, 102.5, 24)))
+    regime = await detect_regime(
+        db_session,
+        window_minutes=WINDOW_MINUTES,
+        lookback_windows=LOOKBACK,
+        now=NOW,
+    )
+    assert regime.regime == "bull"
+    assert regime.features["previous_regime"] == "bull"

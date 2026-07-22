@@ -36,6 +36,26 @@ log = get_logger(__name__)
 # SOL price percent change across the whole lookback window.
 BULL_PCT = 3.0
 BEAR_PCT = -3.0
+# Sticky band: once in bull/bear, the trend must decay this far back inside
+# the neutral zone before the label reverts — SOL hovering around +/-3%
+# otherwise flaps bull/sideways/bull between adjacent cycles, and every flap
+# reshuffles regime-conditioned strategy weighting downstream.
+HYSTERESIS_PCT = 1.0
+
+
+def _trend_label(pct_change: float | None, previous: str | None) -> str:
+    """Bull/bear/sideways with hysteresis against the previous label."""
+    if pct_change is None:
+        return "sideways"
+    if pct_change > BULL_PCT:
+        return "bull"
+    if pct_change < BEAR_PCT:
+        return "bear"
+    if previous == "bull" and pct_change > BULL_PCT - HYSTERESIS_PCT:
+        return "bull"
+    if previous == "bear" and pct_change < BEAR_PCT + HYSTERESIS_PCT:
+        return "bear"
+    return "sideways"
 
 # --- modifier-flag thresholds -------------------------------------------------
 # Stdev of per-window percent returns above this = choppy tape.
@@ -347,12 +367,14 @@ async def detect_regime(
     ys = np.array([p for p in prices])
     slope_per_hour = float(np.polyfit(xs, ys, 1)[0]) if len(xs) >= 2 else None
 
-    if pct_change is not None and pct_change > BULL_PCT:
-        label = "bull"
-    elif pct_change is not None and pct_change < BEAR_PCT:
-        label = "bear"
-    else:
-        label = "sideways"
+    previous_label = (
+        await session.execute(
+            select(MarketRegime.regime).order_by(MarketRegime.ts.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    label = _trend_label(pct_change, previous_label)
+    features["previous_regime"] = previous_label
+    features["hysteresis_pct"] = HYSTERESIS_PCT
 
     features["sol_price_first"] = first_price
     features["sol_price_last"] = last_price
