@@ -115,10 +115,14 @@ async def gather_context(
     try:
         emergency_stop = bool(await redis.get(EMERGENCY_STOP_KEY))
         raw_pnl = await redis.get(DAILY_PNL_KEY_PREFIX + _today(now))
+        from app.services.rpc import RPC_FREEZE_KEY
+
+        rpc_frozen = bool(await redis.get(RPC_FREEZE_KEY))
     except Exception as exc:  # redis unreachable — treat as unknown, non-firing
         log.warning("alert_context_redis_unreadable", error=str(exc))
         emergency_stop = False
         raw_pnl = None
+        rpc_frozen = False
     daily_pnl_sol = float(Decimal(int(raw_pnl or 0)) / _LAMPORTS)
 
     # None (never any data) is distinct from a large age (stalled): a fresh
@@ -135,6 +139,7 @@ async def gather_context(
         "trades_1h": int(trades_1h),
         "failed_tx_1h": int(failed_1h),
         "emergency_stop": emergency_stop,
+        "rpc_frozen": rpc_frozen,
         "daily_pnl_sol": daily_pnl_sol,
         "daily_loss_limit_sol": float(settings.copy_daily_loss_limit_sol),
         "latest_model_auc": float(latest_auc) if latest_auc is not None else None,

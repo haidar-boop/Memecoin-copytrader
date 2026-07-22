@@ -141,9 +141,14 @@ async def status(
 
 @router.post("/emergency-stop")
 async def emergency_stop(redis: aioredis.Redis = Depends(get_redis)) -> dict:
+    """Full stop: halt trading AND freeze all RPC spend. Like the Telegram
+    /stop, this deliberately needs no token — stopping is always allowed."""
+    from app.services.rpc import freeze_rpc
+
     guard = SafetyGuard(get_settings(), redis)
     await guard.trip_emergency_stop("manual stop via API")
-    return {"emergency_stop": "manual stop via API"}
+    await freeze_rpc(redis, "manual stop via API")
+    return {"emergency_stop": "manual stop via API", "rpc_frozen": True}
 
 
 @router.post("/resume")
@@ -152,9 +157,34 @@ async def resume(
     redis: aioredis.Redis = Depends(get_redis),
 ) -> dict:
     _require_admin(x_admin_token)
+    from app.services.rpc import unfreeze_rpc
+
     guard = SafetyGuard(get_settings(), redis)
     await guard.clear_emergency_stop()
-    return {"emergency_stop": None}
+    await unfreeze_rpc(redis)
+    return {"emergency_stop": None, "rpc_frozen": False}
+
+
+@router.post("/rpc-freeze")
+async def rpc_freeze(redis: aioredis.Redis = Depends(get_redis)) -> dict:
+    """Freeze all RPC (zero credits) without touching trading state. No token
+    required — halting spend is always allowed, same rationale as stop."""
+    from app.services.rpc import freeze_rpc
+
+    await freeze_rpc(redis, "manual freeze via API")
+    return {"rpc_frozen": True}
+
+
+@router.post("/rpc-unfreeze")
+async def rpc_unfreeze(
+    x_admin_token: str | None = Header(None),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    _require_admin(x_admin_token)
+    from app.services.rpc import unfreeze_rpc
+
+    await unfreeze_rpc(redis)
+    return {"rpc_frozen": False}
 
 
 @router.post("/approvals/{trade_id}", response_model=CopyTradeOut)

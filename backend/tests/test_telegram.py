@@ -171,9 +171,20 @@ class _FakePubSub:
 class _FakeRedis:
     def __init__(self, messages: list[dict[str, Any]]) -> None:
         self._pubsub = _FakePubSub(messages)
+        self.kv: dict[str, str] = {}
 
     def pubsub(self) -> _FakePubSub:
         return self._pubsub
+
+    async def get(self, key: str):
+        return self.kv.get(key)
+
+    async def set(self, key: str, value: str):
+        self.kv[key] = value
+
+    async def delete(self, *keys: str):
+        for key in keys:
+            self.kv.pop(key, None)
 
 
 def _msg(notification: dict[str, Any]) -> dict[str, Any]:
@@ -333,10 +344,11 @@ async def test_stop_only_for_operator_chat(session_factory) -> None:
     assert await notifier.stop(555) == ""
     assert "copy:emergency_stop" not in redis.data
 
-    # Operator chat: trips the stop.
+    # Operator chat: trips the stop AND freezes RPC (zero credits).
     reply = await notifier.stop("777")
-    assert "Emergency stop" in reply
+    assert "FULL STOP" in reply
     assert redis.data.get("copy:emergency_stop") == "manual stop via Telegram"
+    assert redis.data.get("rpc:frozen") == "manual /stop via Telegram"
 
 
 def test_format_health_ok_and_alerts() -> None:

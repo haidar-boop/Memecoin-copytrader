@@ -217,3 +217,103 @@ async def test_solana_rpc_exempt_without_priority_budget_is_unbounded():
     for _ in range(10):
         await rpc.call("sendTransaction", budget_exempt=True)
     assert main_redis.counters == {}  # never touched
+
+
+class FreezeRedis:
+    """Redis stub exposing the freeze key surface."""
+
+    def __init__(self) -> None:
+        self.kv: dict[str, str] = {}
+
+    async def get(self, key: str):
+        return self.kv.get(key)
+
+    async def set(self, key: str, value: str):
+        self.kv[key] = value
+
+    async def delete(self, *keys: str):
+        for key in keys:
+            self.kv.pop(key, None)
+
+
+class CountingClient:
+    def __init__(self) -> None:
+        self.posts = 0
+
+    async def post(self, url, json):
+        self.posts += 1
+
+        class R:
+            status_code = 200
+
+            def json(self_inner):
+                return {"result": "ok"}
+
+            def raise_for_status(self_inner):
+                pass
+
+        return R()
+
+    async def aclose(self):
+        pass
+
+
+async def test_freeze_makes_every_call_a_noop_zero_credits():
+    """The global kill switch: while frozen, NO call reaches the network and
+    NO budget counter moves — exempt or not. Returns None (a no-op result)."""
+    from app.services.rpc import SolanaRpc, freeze_rpc, unfreeze_rpc
+
+    redis = FreezeRedis()
+    main_redis = FakeRedis()
+    priority_redis = FakeRedis()
+    rpc = SolanaRpc(
+        "http://test",
+        budget=RpcBudget(main_redis, daily_limit=100),
+        priority_budget=RpcBudget(
+            priority_redis, daily_limit=100, key_prefix=RpcBudget.PRIORITY_KEY_PREFIX
+        ),
+        redis=redis,
+    )
+    client = CountingClient()
+    rpc._client = client
+    rpc._limiter._interval = 0.0
+
+    await freeze_rpc(redis)
+    for _ in range(5):
+        assert await rpc.call("getTransaction") is None
+        assert await rpc.call("sendTransaction", budget_exempt=True) is None
+    assert client.posts == 0  # nothing ever hit the network
+    assert main_redis.counters == {}  # no main credit spent
+    assert priority_redis.counters == {}  # no priority credit spent
+
+    # Unfreezing lets calls flow again (cache expires immediately in test).
+    await unfreeze_rpc(redis)
+    rpc._frozen_checked_at = -1e9
+    assert await rpc.call("getTransaction") == "ok"
+    assert client.posts == 1
+
+
+async def test_freeze_keeps_last_state_on_redis_error():
+    """A Redis blip must not silently unfreeze a deliberate halt."""
+    from app.services.rpc import SolanaRpc
+
+    class FlakyRedis(FreezeRedis):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail = False
+
+        async def get(self, key: str):
+            if self.fail:
+                raise ConnectionError("redis down")
+            return await super().get(key)
+
+    redis = FlakyRedis()
+    redis.kv["rpc:frozen"] = "manual"
+    rpc = SolanaRpc("http://test", redis=redis)
+    rpc._client = CountingClient()
+    rpc._limiter._interval = 0.0
+
+    assert await rpc._is_frozen() is True
+    redis.fail = True
+    rpc._frozen_checked_at = -1e9  # force a re-poll that will now error
+    assert await rpc._is_frozen() is True  # retained, not reset to False

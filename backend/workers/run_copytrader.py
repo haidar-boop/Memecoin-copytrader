@@ -24,6 +24,7 @@ async def main(settings: Settings) -> None:
             settings.rpc_priority_daily_credit_budget,
             key_prefix=RpcBudget.PRIORITY_KEY_PREFIX,
         ),
+        redis=redis,
     )
     try:
         await CopyTrader(settings, redis, rpc, build_session_factory(engine)).run()

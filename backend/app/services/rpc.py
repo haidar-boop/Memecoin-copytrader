@@ -23,6 +23,38 @@ RETRYABLE_HTTP = {429, 500, 502, 503, 504}
 # Node-side transient errors (node behind, tx not yet available, etc.)
 RETRYABLE_RPC_CODES = {-32004, -32005, -32014}
 
+# Global credit kill switch. When this Redis key is set, EVERY RPC call —
+# ingestion, enrichment, analytics, execution, exempt or not — short-circuits
+# before the network request and consumes zero credits. It is the one control
+# that halts all provider spend on demand, independent of the per-lane daily
+# budgets (which only cap, not stop). Set/cleared via freeze_rpc/unfreeze_rpc.
+RPC_FREEZE_KEY = "rpc:frozen"
+# The frozen flag is polled at most this often per client to avoid a Redis
+# round-trip on every single RPC call; the trade-off is up to this many
+# seconds of lag between toggling the switch and it taking full effect.
+FREEZE_POLL_SECONDS = 2.0
+
+
+async def freeze_rpc(redis: Any, reason: str = "manual") -> None:
+    """Engage the global credit kill switch: all RPC calls become no-ops."""
+    await redis.set(RPC_FREEZE_KEY, reason)
+
+
+async def unfreeze_rpc(redis: Any) -> None:
+    """Release the global credit kill switch."""
+    await redis.delete(RPC_FREEZE_KEY)
+
+
+async def rpc_freeze_reason(redis: Any) -> str | None:
+    """Current kill-switch reason, or None when RPC is flowing normally."""
+    try:
+        value = await redis.get(RPC_FREEZE_KEY)
+    except Exception:  # noqa: BLE001 - status probe must never raise
+        return None
+    if value is None:
+        return None
+    return value.decode() if isinstance(value, bytes) else str(value)
+
 # Execution-critical methods are never blocked by the daily credit budget:
 # a live position exit must not wait until tomorrow. They still consume
 # credits from the counter.
@@ -169,6 +201,7 @@ class SolanaRpc:
         requests_per_second: float = 8.0,
         budget: RpcBudget | None = None,
         priority_budget: RpcBudget | None = None,
+        redis: Any | None = None,
     ):
         self._url = url
         self._max_retries = max_retries
@@ -180,7 +213,31 @@ class SolanaRpc:
         # priority budget is configured they truly are unbounded (legacy/
         # opt-out behavior); every worker should pass one.
         self._priority_budget = priority_budget
+        # Redis handle powering the global freeze kill switch. None disables
+        # the switch for this client (e.g. offline tools/tests).
+        self._redis = redis
+        self._frozen_cached = False
+        self._frozen_checked_at = -FREEZE_POLL_SECONDS
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
+
+    async def _is_frozen(self) -> bool:
+        """True while the global credit kill switch is engaged.
+
+        Polled at most once per :data:`FREEZE_POLL_SECONDS` per client so it
+        adds no per-call Redis round-trip. On a Redis error the last known
+        state is retained — a blip cannot silently unfreeze a deliberate halt.
+        """
+        if self._redis is None:
+            return False
+        now = time.monotonic()
+        if now - self._frozen_checked_at < FREEZE_POLL_SECONDS:
+            return self._frozen_cached
+        try:
+            self._frozen_cached = bool(await self._redis.get(RPC_FREEZE_KEY))
+        except Exception:  # noqa: BLE001 - keep last state on Redis blip
+            return self._frozen_cached
+        self._frozen_checked_at = now
+        return self._frozen_cached
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -195,6 +252,13 @@ class SolanaRpc:
         priority budget (never the main one) — real-time execution/leader
         fetches skip the MAIN queue, but they are still capped by their own
         daily allowance, not unbounded."""
+        # Global credit kill switch: no network request, no credit, no matter
+        # which service or code path called in. Returning None mirrors a
+        # "no result" response, which every caller already treats as missing
+        # data and skips — so a freeze halts spend without crashing anything.
+        if await self._is_frozen():
+            metrics.RPC_REQUESTS.labels(method=method, status="frozen").inc()
+            return None
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
         backoff = 0.5
         if budget_exempt is None:

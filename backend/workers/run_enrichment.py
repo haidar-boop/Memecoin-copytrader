@@ -24,6 +24,7 @@ async def main(settings: Settings) -> None:
             settings.rpc_priority_daily_credit_budget,
             key_prefix=RpcBudget.PRIORITY_KEY_PREFIX,
         ),
+        redis=redis,
     )
     try:
         await run_enrichment_loop(settings, build_session_factory(engine), rpc, redis)

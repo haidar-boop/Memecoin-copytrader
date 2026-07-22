@@ -173,6 +173,9 @@ def format_health(health: dict[str, Any]) -> str:
         lines.append(
             f"{p_flag} Priority-lane credits: {p_used or 0:,} / {p_limit:,} ({p_pct:.0f}%)"
         )
+    frozen = health.get("rpc_frozen")
+    if frozen:
+        lines.append(f"\U0001f9ca RPC FROZEN ({frozen}) — credit spend is zero")
     stop = health.get("emergency_stop")
     lines.append(
         f"\U0001f6a8 EMERGENCY STOP: {stop}" if stop else "✅ No emergency stop"

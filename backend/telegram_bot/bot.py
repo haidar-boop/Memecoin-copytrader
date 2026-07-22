@@ -213,6 +213,7 @@ class TelegramNotifier:
             "priority_credits_limit": self._settings.rpc_priority_daily_credit_budget
             or None,
             "emergency_stop": None,
+            "rpc_frozen": None,
         }
         try:
             async with self._session_factory() as session:
@@ -245,6 +246,9 @@ class TelegramNotifier:
             )
             health["redis_ok"] = True
             health["emergency_stop"] = await self._redis.get(EMERGENCY_STOP_KEY)
+            from app.services.rpc import rpc_freeze_reason
+
+            health["rpc_frozen"] = await rpc_freeze_reason(self._redis)
         except Exception as exc:  # noqa: BLE001
             log.warning("telegram_health_redis_failed", error=str(exc))
         return format_health(health)
@@ -352,20 +356,58 @@ class TelegramNotifier:
         return str(chat_id) == str(self._settings.telegram_chat_id)
 
     async def stop(self, chat_id: str | int | None) -> str:
-        """Trip the emergency stop, but only for the operator chat."""
+        """Halt EVERYTHING — trading and all credit spend — operator only.
+
+        Trips the emergency stop (no trades) AND engages the global RPC
+        freeze (no ingestion/enrichment/analytics/execution calls, zero
+        credits). This is the "make it stop" button: previously /stop only
+        halted trading while the data services kept burning credits.
+        """
         if not self._is_operator(chat_id):
             log.warning("telegram_stop_ignored_foreign_chat", chat_id=str(chat_id))
             return ""
+        from app.services.rpc import freeze_rpc
+
         await self._guard.trip_emergency_stop("manual stop via Telegram")
-        return "\U0001f6d1 Emergency stop activated. Copy trading halted."
+        await freeze_rpc(self._redis, "manual /stop via Telegram")
+        return (
+            "\U0001f6d1 FULL STOP. Copy trading halted AND all RPC frozen — "
+            "credit spend is now zero. Use /resume to bring it back."
+        )
 
     async def resume(self, chat_id: str | int | None) -> str:
-        """Clear the emergency stop — operator chat only."""
+        """Clear the emergency stop AND the RPC freeze — operator only."""
         if not self._is_operator(chat_id):
             log.warning("telegram_resume_ignored_foreign_chat", chat_id=str(chat_id))
             return ""
+        from app.services.rpc import unfreeze_rpc
+
         await self._guard.clear_emergency_stop()
-        return "✅ Emergency stop cleared. Copy trading may resume."
+        await unfreeze_rpc(self._redis)
+        return "✅ Emergency stop cleared and RPC unfrozen. Data + trading may resume."
+
+    async def freeze(self, chat_id: str | int | None) -> str:
+        """Freeze all RPC (zero credits) WITHOUT touching trading state."""
+        if not self._is_operator(chat_id):
+            log.warning("telegram_freeze_ignored_foreign_chat", chat_id=str(chat_id))
+            return ""
+        from app.services.rpc import freeze_rpc
+
+        await freeze_rpc(self._redis, "manual /freeze via Telegram")
+        return (
+            "\U0001f9ca RPC frozen. All credit spend is now zero "
+            "(ingestion paused). Use /unfreeze to resume data collection."
+        )
+
+    async def unfreeze(self, chat_id: str | int | None) -> str:
+        """Release the RPC freeze — operator only."""
+        if not self._is_operator(chat_id):
+            log.warning("telegram_unfreeze_ignored_foreign_chat", chat_id=str(chat_id))
+            return ""
+        from app.services.rpc import unfreeze_rpc
+
+        await unfreeze_rpc(self._redis)
+        return "✅ RPC unfrozen. Data collection resumes (credits will be spent again)."
 
     # -- dispatcher --------------------------------------------------------
 
@@ -415,6 +457,18 @@ class TelegramNotifier:
         @dp.message(Command("resume"))
         async def _resume(message: Message) -> None:
             reply = await self.resume(message.chat.id)
+            if reply:
+                await message.answer(reply)
+
+        @dp.message(Command("freeze"))
+        async def _freeze(message: Message) -> None:
+            reply = await self.freeze(message.chat.id)
+            if reply:
+                await message.answer(reply)
+
+        @dp.message(Command("unfreeze"))
+        async def _unfreeze(message: Message) -> None:
+            reply = await self.unfreeze(message.chat.id)
             if reply:
                 await message.answer(reply)
 
@@ -469,8 +523,10 @@ HELP_TEXT = (
     "/wallets — top wallets by confidence\n"
     "/trades — most recent observed trades\n"
     "/report — latest weekly report\n"
-    "/stop — activate the emergency stop\n"
-    "/resume — clear the emergency stop\n"
+    "/stop — FULL STOP: halt trading AND freeze all RPC (zero credits)\n"
+    "/resume — clear the emergency stop and unfreeze RPC\n"
+    "/freeze — freeze all RPC (zero credits) without changing trading\n"
+    "/unfreeze — resume data collection after a /freeze\n"
     "/help — show this message"
 )
 
