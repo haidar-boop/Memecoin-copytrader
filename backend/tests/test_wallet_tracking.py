@@ -12,7 +12,8 @@ from sqlalchemy import select
 
 from app.api import wallets
 from app.api.deps import get_db
-from app.config import Settings
+from app.auth.security import create_access_token
+from app.config import Settings, get_settings
 from app.db.models import Wallet
 
 VALID_ADDR = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
@@ -29,8 +30,18 @@ def _build_app(session) -> FastAPI:
     return app
 
 
+def _auth_headers() -> dict[str, str]:
+    # Tracking is a trade-controlling mutation: strict Bearer auth, always.
+    token = create_access_token("admin", get_settings())
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _client(app: FastAPI) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers=_auth_headers(),
+    )
 
 
 async def test_track_creates_unknown_wallet(db_session) -> None:
@@ -96,13 +107,52 @@ async def test_untrack_clears_flag_and_404s_unknown(db_session) -> None:
     assert missing.status_code == 404
 
 
-async def test_track_requires_auth_when_configured(
-    db_session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # With a password hash configured, the dependency demands a Bearer token.
-    configured = Settings(admin_password_hash="$2b$12$x")
-    monkeypatch.setattr("app.auth.deps.get_settings", lambda: configured)
+async def test_track_fails_closed_without_token(db_session) -> None:
+    """No Bearer token -> 401 even in an unconfigured deployment.
 
-    async with _client(_build_app(db_session)) as client:
-        resp = await client.post("/api/wallets/track", json={"address": VALID_ADDR})
-    assert resp.status_code == 401
+    Tracking bypasses the confidence bar, so unlike read endpoints it must
+    never be open-when-unconfigured.
+    """
+    app = _build_app(db_session)
+    bare = httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    async with bare as client:
+        track = await client.post("/api/wallets/track", json={"address": VALID_ADDR})
+        untrack = await client.delete(f"/api/wallets/{VALID_ADDR}/track")
+    assert track.status_code == 401
+    assert untrack.status_code == 401
+
+
+async def test_track_race_with_concurrent_insert(db_session) -> None:
+    """Losing the insert race still stars the surviving row (no 500)."""
+    from sqlalchemy.exc import IntegrityError
+
+    now = datetime.now(tz=UTC)
+    original_commit = db_session.commit
+    raced = {"done": False}
+
+    async def racing_commit():
+        if not raced["done"]:
+            raced["done"] = True
+            # Simulate the ingestion writer winning the insert: roll back
+            # our pending insert and materialize the row untracked.
+            await db_session.rollback()
+            db_session.add(
+                Wallet(
+                    address=VALID_ADDR,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    is_tracked=False,
+                )
+            )
+            await original_commit()
+            raise IntegrityError("duplicate", None, Exception("unique"))
+        await original_commit()
+
+    db_session.commit = racing_commit
+    try:
+        async with _client(_build_app(db_session)) as client:
+            resp = await client.post("/api/wallets/track", json={"address": VALID_ADDR})
+    finally:
+        db_session.commit = original_commit
+    assert resp.status_code == 200
+    assert resp.json()["is_tracked"] is True

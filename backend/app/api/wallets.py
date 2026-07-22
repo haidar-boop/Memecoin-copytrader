@@ -8,10 +8,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy.exc import IntegrityError
+
 from app.api.analytics import WalletStatsOut, WalletStatsSnapshotOut
 from app.api.deps import get_db
 from app.api.schemas import PositionOut, TradeOut, WalletOut
-from app.auth.deps import require_auth_if_configured
+from app.auth.deps import require_auth
 from app.db.models import Position, Token, Trade, Wallet, WalletStats, WalletStatsSnapshot
 from app.logging_config import get_logger
 
@@ -31,9 +33,13 @@ class TrackRequest(BaseModel):
 async def track_wallet(
     body: TrackRequest,
     db: AsyncSession = Depends(get_db),
-    _user: str | None = Depends(require_auth_if_configured),
+    _user: str = Depends(require_auth),
 ) -> Wallet:
     """Star a wallet: mark it manually tracked so the copy engine follows it.
+
+    Tracking bypasses the confidence bar in the evaluator, so this is a
+    trade-controlling mutation — it FAILS CLOSED (strict auth, like the
+    copytrading resume/approval endpoints), never open-when-unconfigured.
 
     Unknown addresses are created on the spot — starring a wallet found on
     Twitter/DexScreener must not wait for the chain listener to happen upon
@@ -50,9 +56,21 @@ async def track_wallet(
         wallet = Wallet(address=address, first_seen_at=now, last_seen_at=now,
                         is_tracked=True)
         db.add(wallet)
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Lost the race against a concurrent star or the ingestion
+            # writer inserting this actively-trading wallet: fall through
+            # to flagging the row that won.
+            await db.rollback()
+            wallet = (
+                await db.execute(select(Wallet).where(Wallet.address == address))
+            ).scalar_one()
+            wallet.is_tracked = True
+            await db.commit()
     else:
         wallet.is_tracked = True
-    await db.commit()
+        await db.commit()
     await db.refresh(wallet)
     log.info("wallet_tracked", address=address)
     return wallet
@@ -62,7 +80,7 @@ async def track_wallet(
 async def untrack_wallet(
     address: str,
     db: AsyncSession = Depends(get_db),
-    _user: str | None = Depends(require_auth_if_configured),
+    _user: str = Depends(require_auth),
 ) -> Wallet:
     """Unstar a wallet. It may still be auto-followed if its confidence
     clears the copy_auto_follow bar — this only removes the manual pin."""

@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { api, TopWallet, trackWallet } from "@/lib/api";
+import { api, TopWallet, Wallet, trackWallet } from "@/lib/api";
 import { StarButton } from "@/components/StarButton";
 import { useApi } from "@/lib/useApi";
 import {
@@ -24,7 +24,7 @@ const SORTS: Array<{ key: string; label: string }> = [
   { key: "win_rate", label: "Win rate" },
 ];
 
-function AddWalletBox() {
+function AddWalletBox({ onAdded }: { onAdded: () => void }) {
   const [address, setAddress] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -39,6 +39,7 @@ function AddWalletBox() {
       await trackWallet(addr);
       setMessage(`★ Now tracking ${addr.slice(0, 4)}…${addr.slice(-4)}`);
       setAddress("");
+      onAdded();
     } catch (err) {
       setMessage(
         `Failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -70,9 +71,57 @@ function AddWalletBox() {
   );
 }
 
+function StarredSection({
+  refreshKey,
+  onChanged,
+}: {
+  refreshKey: number;
+  onChanged: () => void;
+}) {
+  const { data, error, loading } = useApi<Wallet[]>(
+    () => api.get("/api/wallets", { tracked_only: true, limit: 200 }),
+    [refreshKey],
+  );
+
+  // A freshly starred wallet has no stats yet, so it would be invisible in
+  // the rankings — this section is where every starred wallet ALWAYS shows.
+  return (
+    <Section title="⭐ Starred wallets">
+      {loading && <Loading what="starred wallets" />}
+      {error && <ErrorBox error={error} />}
+      {data && data.length === 0 && (
+        <div className="text-sm text-muted">
+          Nothing starred yet. Star a wallet below (or paste an address above)
+          and the copy engine will follow its buys.
+        </div>
+      )}
+      {data && data.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {data.map((w) => (
+            <span
+              key={w.id}
+              className="flex items-center gap-1 rounded-lg border border-edge bg-panel px-2 py-1"
+            >
+              <StarButton address={w.address} tracked onChange={onChanged} />
+              <Link
+                href={`/wallets/${w.address}`}
+                className="font-mono text-sm text-accent hover:underline"
+              >
+                {shortAddr(w.address, 6)}
+              </Link>
+            </span>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 export default function WalletsPage() {
   const [by, setBy] = useState("confidence_score");
   const [minClosed, setMinClosed] = useState(0);
+  const [starBump, setStarBump] = useState(0);
+  const bump = () => setStarBump((n) => n + 1);
   const { data, error, loading } = useApi<TopWallet[]>(
     () =>
       api.get("/api/analytics/wallets/top", {
@@ -80,13 +129,16 @@ export default function WalletsPage() {
         limit: 100,
         min_closed: minClosed,
       }),
-    [by, minClosed],
+    [by, minClosed, starBump],
   );
 
   return (
     <div>
       <h1 className="mb-6 text-2xl font-bold">Wallet Rankings</h1>
-      <AddWalletBox />
+      <AddWalletBox onAdded={bump} />
+      <div className="mb-6">
+        <StarredSection refreshKey={starBump} onChanged={bump} />
+      </div>
       <Section
         title="Tracked wallets"
         right={
@@ -135,7 +187,11 @@ export default function WalletsPage() {
                 <tr key={w.wallet_id} className="hover:bg-panel2/50">
                   <td className="td text-muted">{i + 1}</td>
                   <td className="td">
-                    <StarButton address={w.address} tracked={w.is_tracked} />
+                    <StarButton
+                      address={w.address}
+                      tracked={w.is_tracked}
+                      onChange={bump}
+                    />
                   </td>
                   <td className="td">
                     <Link

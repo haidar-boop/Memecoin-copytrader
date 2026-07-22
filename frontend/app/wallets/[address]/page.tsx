@@ -67,11 +67,17 @@ function ConfidenceComponents({
 export default function WalletDetailPage() {
   const params = useParams<{ address: string }>();
   const address = params.address;
+  // Local override so the banner and star stay in sync after a toggle,
+  // instead of reverting to the (now stale) fetched value.
+  const [trackedOverride, setTrackedOverride] = React.useState<boolean | null>(
+    null,
+  );
 
   const wallet = useApi<Wallet>(
     () => api.get(`/api/wallets/${address}`),
     [address],
   );
+  const isTracked = trackedOverride ?? wallet.data?.is_tracked ?? false;
   const stats = useApi<WalletStats>(
     () => api.get(`/api/wallets/${address}/stats`),
     [address],
@@ -98,15 +104,21 @@ export default function WalletDetailPage() {
           {wallet.data && (
             <StarButton
               address={address}
-              tracked={wallet.data.is_tracked}
+              tracked={isTracked}
+              onChange={setTrackedOverride}
               className="mt-0.5 shrink-0"
             />
           )}
           <span>{address}</span>
         </h1>
-        {wallet.data?.is_tracked && (
+        {wallet.data && isTracked && (
           <div className="mt-1 text-xs text-amber-400">
             Tracked — the copy engine follows this wallet&apos;s buys.
+          </div>
+        )}
+        {wallet.error && (
+          <div className="mt-1 text-xs text-muted">
+            Tracked status unavailable: {wallet.error.message}
           </div>
         )}
       </div>
