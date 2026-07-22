@@ -26,6 +26,19 @@ x-backend-env: &backend-env
   ENABLED_DEXES: ${ENABLED_DEXES:-["pumpfun","pumpswap","raydium_amm","raydium_clmm","raydium_cpmm","orca_whirlpool","jupiter"]}
   VETTING_ENABLED: ${VETTING_ENABLED:-true}
   VETTING_BLOCK_SUSPICIOUS: ${VETTING_BLOCK_SUSPICIOUS:-true}
+  # --- CPU throttles -----------------------------------------------------
+  # How often background jobs run and how much they chew per cycle. Defaults
+  # match app/config.py; raise the intervals / lower the batch on a small
+  # droplet to keep the analytics + enrichment workers off the CPU ceiling.
+  # These are the biggest CPU levers: the analytics worker recomputes wallet
+  # stats over ANALYTICS_WALLET_BATCH wallets every WALLET_STATS_INTERVAL.
+  WALLET_STATS_INTERVAL_SECONDS: ${WALLET_STATS_INTERVAL_SECONDS:-300}
+  ANALYTICS_WALLET_BATCH: ${ANALYTICS_WALLET_BATCH:-2000}
+  STRATEGY_INTERVAL_SECONDS: ${STRATEGY_INTERVAL_SECONDS:-3600}
+  PATTERNS_INTERVAL_SECONDS: ${PATTERNS_INTERVAL_SECONDS:-3600}
+  ML_RETRAIN_INTERVAL_SECONDS: ${ML_RETRAIN_INTERVAL_SECONDS:-86400}
+  TOKEN_SNAPSHOT_INTERVAL_SECONDS: ${TOKEN_SNAPSHOT_INTERVAL_SECONDS:-60}
+  MARKET_SNAPSHOT_INTERVAL_SECONDS: ${MARKET_SNAPSHOT_INTERVAL_SECONDS:-60}
   RUG_CHECK_ENABLED: ${RUG_CHECK_ENABLED:-true}
   RUG_MAX_SCORE: ${RUG_MAX_SCORE:-60}
   RUG_FAIL_CLOSED: ${RUG_FAIL_CLOSED:-true}
