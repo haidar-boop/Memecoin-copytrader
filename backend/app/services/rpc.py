@@ -227,7 +227,9 @@ class SolanaRpc:
 
     # --- typed wrappers ----------------------------------------------------
 
-    async def get_transaction(self, signature: str) -> dict | None:
+    async def get_transaction(
+        self, signature: str, budget_exempt: bool | None = None
+    ) -> dict | None:
         return await self.call(
             "getTransaction",
             [
@@ -238,6 +240,7 @@ class SolanaRpc:
                     "maxSupportedTransactionVersion": 0,
                 },
             ],
+            budget_exempt=budget_exempt,
         )
 
     async def get_balance(self, pubkey: str) -> int | None:

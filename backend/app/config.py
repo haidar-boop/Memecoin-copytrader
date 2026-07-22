@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     ]
     ingest_stream_key: str = "ingest:signatures"
     ingest_group: str = "writers"
+    # Priority lane: followed/starred wallets get dedicated logsSubscribe
+    # subscriptions; their signatures land on this stream, which the writer
+    # drains BEFORE the sampled firehose so a leader's buy is fetched within
+    # seconds instead of being ~95% likely trimmed away under budget caps.
+    follow_lane_enabled: bool = True
+    follow_lane_max: int = 50
+    follow_lane_refresh_seconds: int = 60
+    ingest_priority_stream_key: str = "ingest:signatures:priority"
+    ingest_priority_maxlen: int = 5_000
     ingest_batch_size: int = 32
     ingest_fetch_concurrency: int = 8
     ingest_max_attempts: int = 5

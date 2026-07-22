@@ -27,7 +27,7 @@ def _build_job_specs(
     redis: object | None = None,
 ) -> list[JobSpec]:
     async def wallet_stats_cycle() -> None:
-        from app.analytics import wallet_metrics
+        from app.analytics import follow_lane, wallet_metrics
 
         async with session_factory() as session:
             await wallet_metrics.run_once(
@@ -36,6 +36,11 @@ def _build_job_specs(
                 wallet_batch=settings.analytics_wallet_batch,
                 now=datetime.now(tz=UTC),
             )
+        # Fresh scores may promote/demote wallets across the auto-follow
+        # bar — republish the priority-lane set in the same cycle.
+        if redis is not None:
+            async with session_factory() as session:
+                await follow_lane.publish_followed(session, redis, settings)
 
     async def strategy_cycle() -> None:
         from app.analytics import strategy

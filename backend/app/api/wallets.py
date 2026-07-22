@@ -11,11 +11,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from app.api.analytics import WalletStatsOut, WalletStatsSnapshotOut
-from app.api.deps import get_db
+from app.api.deps import get_db, get_redis
 from app.api.schemas import PositionOut, TradeOut, WalletOut
 from app.auth.deps import require_auth
 from app.db.models import Position, Token, Trade, Wallet, WalletStats, WalletStatsSnapshot
 from app.logging_config import get_logger
+from app.services.redis import get_followed_wallets, set_followed_wallets
+
+
+async def _nudge_follow_lane(redis, address: str, followed: bool) -> None:
+    """Best-effort immediate update of the priority-lane set on star/unstar.
+
+    The analytics cycle republishes the authoritative set every few minutes;
+    this just closes the gap so a fresh star is subscribed within a minute
+    instead of waiting for the next cycle.
+    """
+    try:
+        current = set(await get_followed_wallets(redis))
+        if followed:
+            current.add(address)
+        else:
+            current.discard(address)
+        await set_followed_wallets(redis, list(current))
+    except Exception:  # noqa: BLE001 - lane sync must never fail the request
+        log.warning("follow_lane_nudge_failed", address=address)
 
 log = get_logger(__name__)
 
@@ -33,6 +52,7 @@ class TrackRequest(BaseModel):
 async def track_wallet(
     body: TrackRequest,
     db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis),
     _user: str = Depends(require_auth),
 ) -> Wallet:
     """Star a wallet: mark it manually tracked so the copy engine follows it.
@@ -72,6 +92,7 @@ async def track_wallet(
         wallet.is_tracked = True
         await db.commit()
     await db.refresh(wallet)
+    await _nudge_follow_lane(redis, address, followed=True)
     log.info("wallet_tracked", address=address)
     return wallet
 
@@ -80,6 +101,7 @@ async def track_wallet(
 async def untrack_wallet(
     address: str,
     db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis),
     _user: str = Depends(require_auth),
 ) -> Wallet:
     """Unstar a wallet. It may still be auto-followed if its confidence
@@ -92,6 +114,7 @@ async def untrack_wallet(
     wallet.is_tracked = False
     await db.commit()
     await db.refresh(wallet)
+    await _nudge_follow_lane(redis, address, followed=False)
     log.info("wallet_untracked", address=address)
     return wallet
 

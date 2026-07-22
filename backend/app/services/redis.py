@@ -15,6 +15,25 @@ TRADES_CHANNEL = "events:trades"
 NOTIFICATIONS_CHANNEL = "events:notifications"
 SOL_PRICE_KEY = "price:sol_usd"
 HOLDERS_KEY_PREFIX = "holders:"
+# JSON list of wallet addresses the copy engine follows (tracked + above the
+# auto-follow confidence bar). Written by the analytics follow-lane publisher
+# and the track API; read by the WS listener for per-wallet subscriptions.
+FOLLOWED_WALLETS_KEY = "follow:wallets"
+
+
+async def get_followed_wallets(redis: aioredis.Redis) -> list[str]:
+    """Current followed-wallet set, empty on any error (lane degrades off)."""
+    try:
+        raw = await redis.get(FOLLOWED_WALLETS_KEY)
+        parsed = json.loads(raw) if raw else []
+        return [str(a) for a in parsed] if isinstance(parsed, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def set_followed_wallets(redis: aioredis.Redis, addresses: list[str]) -> None:
+    """Atomically replace the followed-wallet set (sorted for cheap compare)."""
+    await redis.set(FOLLOWED_WALLETS_KEY, json.dumps(sorted(set(addresses))))
 
 
 def create_redis(url: str) -> aioredis.Redis:

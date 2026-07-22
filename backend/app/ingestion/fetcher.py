@@ -73,23 +73,44 @@ class IngestWriter:
 
     async def run(self) -> None:
         stream, group = self._settings.ingest_stream_key, self._settings.ingest_group
+        priority = self._settings.ingest_priority_stream_key
         await ensure_group(self._redis, stream, group)
+        await ensure_group(self._redis, priority, group)
         log.info("ingest_writer_started", stream=stream, group=group, consumer=self._consumer)
         while not self._stopped.is_set():
             try:
                 await self._autoclaim_if_due()
+                # Priority lane first: followed wallets' signatures must be
+                # fetched NOW (they gate live copy decisions), never queued
+                # behind the sampled firehose. Non-blocking peek; fall back
+                # to the main stream only when the lane is empty.
                 entries = await self._redis.xreadgroup(
                     group,
                     self._consumer,
-                    {stream: ">"},
+                    {priority: ">"},
                     count=self._settings.ingest_batch_size,
-                    block=5000,
+                    block=0,
                 )
+                active_stream, budget_exempt = priority, True
+                if not entries or not entries[0][1]:
+                    entries = await self._redis.xreadgroup(
+                        group,
+                        self._consumer,
+                        {stream: ">"},
+                        count=self._settings.ingest_batch_size,
+                        block=5000,
+                    )
+                    active_stream, budget_exempt = stream, False
                 if not entries:
                     continue
                 messages = entries[0][1]
+                if not messages:
+                    continue
                 fetched = await asyncio.gather(
-                    *(self._fetch(entry_id, fields) for entry_id, fields in messages)
+                    *(
+                        self._fetch(entry_id, fields, budget_exempt=budget_exempt)
+                        for entry_id, fields in messages
+                    )
                 )
                 # Persist sequentially, oldest slot first (see module
                 # docstring); retries requeue concurrently afterwards so
@@ -97,11 +118,16 @@ class IngestWriter:
                 sol_price = await self._sol_price()
                 retries: list[tuple[str, dict]] = []
                 for entry_id, fields, tx in sorted(fetched, key=_slot_order):
-                    if tx is None or not await self._persist_and_ack(entry_id, fields, tx, sol_price):
+                    if tx is None or not await self._persist_and_ack(
+                        entry_id, fields, tx, sol_price, stream=active_stream
+                    ):
                         retries.append((entry_id, fields))
                 if retries:
                     await asyncio.gather(
-                        *(self._requeue_or_drop(entry_id, fields) for entry_id, fields in retries)
+                        *(
+                            self._requeue_or_drop(entry_id, fields, stream=active_stream)
+                            for entry_id, fields in retries
+                        )
                     )
                 try:
                     metrics.QUEUE_DEPTH.set(await self._redis.xlen(stream))
@@ -118,23 +144,31 @@ class IngestWriter:
         if loop_time - self._last_autoclaim < AUTOCLAIM_INTERVAL_SECONDS:
             return
         self._last_autoclaim = loop_time
-        try:
-            await self._redis.xautoclaim(
-                self._settings.ingest_stream_key,
-                self._settings.ingest_group,
-                self._consumer,
-                min_idle_time=AUTOCLAIM_MIN_IDLE_MS,
-                count=self._settings.ingest_batch_size,
-            )
-        except Exception as exc:
-            log.warning("xautoclaim_failed", error=str(exc))
+        for stream in (
+            self._settings.ingest_priority_stream_key,
+            self._settings.ingest_stream_key,
+        ):
+            try:
+                await self._redis.xautoclaim(
+                    stream,
+                    self._settings.ingest_group,
+                    self._consumer,
+                    min_idle_time=AUTOCLAIM_MIN_IDLE_MS,
+                    count=self._settings.ingest_batch_size,
+                )
+            except Exception as exc:
+                log.warning("xautoclaim_failed", stream=stream, error=str(exc))
 
-    async def _fetch(self, entry_id: str, fields: dict) -> tuple[str, dict, dict | None]:
+    async def _fetch(
+        self, entry_id: str, fields: dict, budget_exempt: bool = False
+    ) -> tuple[str, dict, dict | None]:
         """Concurrent phase: fetch the transaction; never touches the DB."""
         signature = fields.get("signature", "")
         try:
             async with self._fetch_semaphore:
-                tx = await self._rpc.get_transaction(signature)
+                tx = await self._rpc.get_transaction(
+                    signature, budget_exempt=budget_exempt or None
+                )
         except Exception as exc:
             log.warning("tx_fetch_error", signature=signature, error=str(exc))
             metrics.TX_FETCHED.labels(status="error").inc()
@@ -143,10 +177,16 @@ class IngestWriter:
         return entry_id, fields, tx
 
     async def _persist_and_ack(
-        self, entry_id: str, fields: dict, tx: dict, sol_price: Decimal | None
+        self,
+        entry_id: str,
+        fields: dict,
+        tx: dict,
+        sol_price: Decimal | None,
+        stream: str | None = None,
     ) -> bool:
         """Sequential phase: persist one transaction; True when acked."""
-        stream, group = self._settings.ingest_stream_key, self._settings.ingest_group
+        stream = stream or self._settings.ingest_stream_key
+        group = self._settings.ingest_group
         try:
             await self._persist(tx, sol_price)
         except Exception:
@@ -156,10 +196,13 @@ class IngestWriter:
         await self._redis.xack(stream, group, entry_id)
         return True
 
-    async def _requeue_or_drop(self, entry_id: str, fields: dict) -> None:
+    async def _requeue_or_drop(
+        self, entry_id: str, fields: dict, stream: str | None = None
+    ) -> None:
         """Re-add first, ack second: a crash in between duplicates (safe, the
         writes are idempotent) instead of silently dropping the signature."""
-        stream, group = self._settings.ingest_stream_key, self._settings.ingest_group
+        stream = stream or self._settings.ingest_stream_key
+        group = self._settings.ingest_group
         attempts = int(fields.get("attempts", "0"))
         if attempts + 1 >= self._settings.ingest_max_attempts:
             log.warning("signature_dropped", signature=fields.get("signature"), attempts=attempts + 1)
@@ -169,10 +212,15 @@ class IngestWriter:
         # Pace retries so a not-yet-indexed transaction is not burned through
         # all its attempts before the RPC node catches up.
         await asyncio.sleep(REQUEUE_DELAY_SECONDS)
+        maxlen = (
+            self._settings.ingest_priority_maxlen
+            if stream == self._settings.ingest_priority_stream_key
+            else self._settings.ingest_stream_maxlen
+        )
         await self._redis.xadd(
             stream,
             {**fields, "attempts": str(attempts + 1)},
-            maxlen=self._settings.ingest_stream_maxlen,
+            maxlen=maxlen,
             approximate=True,
         )
         await self._redis.xack(stream, group, entry_id)

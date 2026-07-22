@@ -11,7 +11,7 @@ from httpx import ASGITransport
 from sqlalchemy import select
 
 from app.api import wallets
-from app.api.deps import get_db
+from app.api.deps import get_db, get_redis
 from app.auth.security import create_access_token
 from app.config import Settings, get_settings
 from app.db.models import Wallet
@@ -27,6 +27,9 @@ def _build_app(session) -> FastAPI:
         yield session
 
     app.dependency_overrides[get_db] = _get_db_override
+    from tests.conftest import StubRedis
+
+    app.dependency_overrides[get_redis] = lambda: StubRedis()
     return app
 
 
