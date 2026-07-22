@@ -75,10 +75,12 @@ async def _make_pool(
     lp_mint: str | None = LP_MINT,
     base_vault: str | None = "VaultBase111",
     quote_vault: str | None = "VaultQuote11",
+    address: str = "Pool11111111",
+    dex: str = "raydium",
 ) -> DexPool:
     pool = DexPool(
-        address="Pool11111111",
-        dex="raydium",
+        address=address,
+        dex=dex,
         token_id=token.id,
         base_mint=token.mint,
         quote_mint="So11111111111111111111111111111111111111112",
@@ -202,3 +204,43 @@ async def test_rpc_failures_yield_nones_and_probe_errors(db_session):
     assert len(signals.probe_errors) == 3
     assert token.mint_authority is None
     assert token.security_checked_at is None
+
+
+async def test_curve_pool_row_sets_bonding_curve_and_excludes_curve_ata(db_session):
+    """The writer stores the pump.fun curve AS a DexPool row (no lp_mint,
+    no vaults). The probe must (a) still flag is_bonding_curve and (b)
+    exclude the curve's associated token account from holder concentration
+    — it holds ~all pre-migration supply and is not a whale."""
+    from app.enrichment.token_security import _associated_token_account
+
+    # A decodable base58 mint (the module MINT constant is not 32 bytes).
+    real_mint = "SeQSoj4JAdwh7i6xGjVLkuyR83ZH6QUzGNV4DoNxXkn"
+    token = Token(mint=real_mint, primary_dex="pumpfun", first_seen_at=NOW)
+    db_session.add(token)
+    await db_session.flush()
+    curve = "2oCEitAjaBaNZSDyiqbPuAiR8kZbMv2FD7uKoeYhpzni"
+    await _make_pool(
+        db_session, token, lp_mint=None, base_vault=None, quote_vault=None,
+        address=curve, dex="pumpfun",
+    )
+    curve_ata = _associated_token_account(curve, token.mint)
+    assert curve_ata is not None
+
+    rpc = FakeRpc(
+        largest={
+            token.mint: [
+                {"address": curve_ata, "amount": "900000", "decimals": 0},
+                {"address": "Ho1derA111111111111111111111111111111111111", "amount": "50000", "decimals": 0},
+                {"address": "Ho1derB111111111111111111111111111111111111", "amount": "50000", "decimals": 0},
+            ]
+        },
+        supplies={token.mint: {"amount": "1000000", "decimals": 0}},
+        fail={f"account:{token.mint}"},  # authorities unknown; not under test
+    )
+    probe = TokenSecurityProbe(rpc, Settings())
+    signals = await probe.probe(db_session, token)
+
+    assert signals.is_bonding_curve is True
+    # Curve ATA excluded: top10 = 100k / 1M, not 950k / 1M.
+    assert signals.top10_holder_pct is not None
+    assert abs(signals.top10_holder_pct - 0.10) < 1e-9

@@ -206,3 +206,38 @@ async def test_run_once_survives_bad_mint(db_session: AsyncSession) -> None:
     assert updated == 1  # the bad mint is skipped, the good one still lands
     assert good.decimals == 6
     assert bad.decimals is None
+
+
+async def test_run_once_prefers_actively_traded_over_newer(
+    db_session: AsyncSession,
+) -> None:
+    """A token trading RIGHT NOW outranks a newer inactive one — the
+    decision engine needs its supply (for market cap) first."""
+    from app.db.models import Trade
+
+    active = Token(mint=str(MINT_B), first_seen_at=T0 - timedelta(hours=3))
+    newer = Token(mint=str(MINT_C), first_seen_at=T0)
+    db_session.add_all([active, newer])
+    await db_session.flush()
+    db_session.add(
+        Trade(
+            signature="sig-active", event_index=0,
+            block_time=T0 - timedelta(minutes=5), slot=1,
+            wallet_id=1, token_id=active.id, dex="pumpfun", side="buy",
+            token_amount=1, quote_amount=1,
+            quote_mint="So11111111111111111111111111111111111111112",
+        )
+    )
+    await db_session.commit()
+
+    rpc = StubRpc()
+    rpc.supply_by_mint[str(MINT_B)] = {
+        "amount": "1000000000",
+        "decimals": 9,
+        "uiAmountString": "1",
+    }
+    await token_metadata.run_once(db_session, rpc, batch=1, now=T0)
+
+    assert rpc.supply_calls == [str(MINT_B)]
+    assert active.decimals == 9
+    assert newer.decimals is None

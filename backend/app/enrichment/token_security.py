@@ -31,6 +31,31 @@ log = get_logger(__name__)
 # LP transferred to it is as good as burned even though supply is unchanged.
 INCINERATOR = "1nc1nerator11111111111111111111111111111111"
 
+_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+_ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+
+
+def _associated_token_account(owner: str, mint: str) -> str | None:
+    """Derive the SPL associated token account of (owner, mint), or None.
+
+    Pure offline PDA derivation — lets the probe exclude pool-state-owned
+    reserve accounts (pump.fun curve / PumpSwap) without an RPC lookup.
+    """
+    try:
+        from solders.pubkey import Pubkey
+
+        address, _bump = Pubkey.find_program_address(
+            [
+                bytes(Pubkey.from_string(owner)),
+                bytes(Pubkey.from_string(_TOKEN_PROGRAM)),
+                bytes(Pubkey.from_string(mint)),
+            ],
+            Pubkey.from_string(_ATA_PROGRAM),
+        )
+        return str(address)
+    except Exception:  # noqa: BLE001 - malformed address -> just don't exclude
+        return None
+
 _TOP_HOLDERS = 10
 
 
@@ -70,6 +95,12 @@ class TokenSecurityProbe:
             .scalars()
             .all()
         )
+        # The writer records the pump.fun bonding curve AS a DexPool row
+        # (address = curve state, no lp_mint) — recognize it here, or the
+        # curve is mistaken for a regular pool and its supply-holding token
+        # account for a whale.
+        if any(p.dex == "pumpfun" and p.lp_mint is None for p in pools):
+            signals.is_bonding_curve = True
         await self._probe_authorities(session, token, signals)
         await self._probe_holders(token, pools, signals)
         await self._probe_lp(token, pools, signals)
@@ -136,6 +167,16 @@ class TokenSecurityProbe:
             return
         vaults = {p.base_vault for p in pools} | {p.quote_vault for p in pools}
         vaults.discard(None)
+        # Pump.fun (curve + PumpSwap) pool rows carry no vault addresses, but
+        # both venues hold reserves in the pool state's associated token
+        # account — derivable offline. Without this, the bonding curve's
+        # ~whole-supply account reads as a top holder and hard-blocks every
+        # young pump.fun token.
+        for pool in pools:
+            if pool.base_vault is None and pool.quote_vault is None:
+                ata = _associated_token_account(pool.address, token.mint)
+                if ata is not None:
+                    vaults.add(ata)
         holders = [h for h in largest if h.get("address") not in vaults]
         top = sorted((_amount(h) for h in holders), reverse=True)[:_TOP_HOLDERS]
         signals.top10_holder_pct = min(1.0, max(0.0, sum(top) / supply_amount))

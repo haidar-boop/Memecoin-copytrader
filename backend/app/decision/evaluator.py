@@ -369,12 +369,23 @@ class Evaluator:
             ),
             gate(
                 "market_cap_band",
-                latest is not None
-                and latest.market_cap_usd is not None
-                and settings.copy_min_market_cap_usd
-                <= float(latest.market_cap_usd)
-                <= settings.copy_max_market_cap_usd,
-                f"mcap {to_float(latest.market_cap_usd) if latest else None} USD",
+                (
+                    settings.copy_min_market_cap_usd
+                    <= float(latest.market_cap_usd)
+                    <= settings.copy_max_market_cap_usd
+                    if latest is not None and latest.market_cap_usd is not None
+                    else not settings.copy_require_market_cap
+                ),
+                (
+                    f"mcap {to_float(latest.market_cap_usd)} USD"
+                    if latest is not None and latest.market_cap_usd is not None
+                    else "mcap unknown (supply not backfilled); "
+                    + (
+                        "blocked by copy_require_market_cap"
+                        if settings.copy_require_market_cap
+                        else "passing — liquidity floor guards"
+                    )
+                ),
             ),
             gate("position_size", size > 0, "; ".join(size_notes)),
             gate("safety_rails", not safety_blocks, "; ".join(safety_blocks) or "clear"),

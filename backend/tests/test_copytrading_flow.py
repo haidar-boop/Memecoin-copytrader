@@ -267,3 +267,28 @@ async def test_rug_gate_blocks_and_notifies(
         await db_session.execute(select(TokenRiskAssessment))
     ).scalars().first()
     assert assessment is not None and assessment.hard_blocked is True
+
+
+async def test_unknown_mcap_passes_by_default(db_session: AsyncSession, stub_redis: StubRedis) -> None:
+    """A token whose supply was never backfilled (mcap None) must still be
+    copyable — fail-on-unknown silently blocked every fresh token."""
+    wallet, token = await seed_market(db_session)
+    # Wipe mcap from the latest snapshot.
+    from sqlalchemy import update
+
+    from app.db.models import TokenSnapshot as TS
+
+    await db_session.execute(update(TS).values(market_cap_usd=None))
+    await db_session.commit()
+
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    trader = make_trader(factory, stub_redis, make_settings())
+    evaluation = await trader.handle_message(buy_message())
+    assert evaluation is not None and evaluation.decision == "copy"
+    mcap_gate = next(r for r in evaluation.reasons if r["gate"] == "market_cap_band")
+    assert mcap_gate["passed"] is True and "unknown" in mcap_gate["note"]
+
+    # Strict mode blocks the same trade.
+    trader2 = make_trader(factory, stub_redis, make_settings(copy_require_market_cap=True))
+    evaluation2 = await trader2.handle_message(buy_message())
+    assert evaluation2 is not None and evaluation2.decision == "skip"

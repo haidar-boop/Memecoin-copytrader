@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     copy_min_liquidity_sol: float = 25.0
     copy_min_market_cap_usd: float = 10_000.0
     copy_max_market_cap_usd: float = 50_000_000.0
+    # Unknown market cap (supply not yet backfilled) passes the band gate by
+    # default — the liquidity floor is the real thin-token guard, and
+    # fail-on-unknown silently blocked every copy on fresh tokens. Strict
+    # deployments can require a known mcap.
+    copy_require_market_cap: bool = False
     copy_token_blacklist: list[str] = []
     copy_wallet_blacklist: list[str] = []
     # Sizing.

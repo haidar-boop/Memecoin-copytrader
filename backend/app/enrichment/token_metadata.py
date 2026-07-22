@@ -12,16 +12,16 @@ from __future__ import annotations
 
 import base64
 import struct
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from pydantic import BaseModel
 from solders.pubkey import Pubkey
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Token
+from app.db.models import Token, Trade
 from app.ingestion.programs import METAPLEX_METADATA
 from app.logging_config import get_logger
 
@@ -151,12 +151,26 @@ async def run_once(
 ) -> int:
     """Single metadata pass; returns the number of token rows updated."""
     now = now or datetime.now(tz=UTC)
+    # Actively-traded tokens first: they are the ones the decision engine is
+    # evaluating RIGHT NOW, and without supply their market cap stays None.
+    # Newest-created-first left most active tokens permanently unbackfilled
+    # under high token churn.
+    activity = (
+        select(Trade.token_id, func.max(Trade.block_time).label("last_trade"))
+        .where(Trade.block_time >= now - timedelta(hours=1))
+        .group_by(Trade.token_id)
+        .subquery()
+    )
     tokens = (
         (
             await session.execute(
                 select(Token)
+                .outerjoin(activity, activity.c.token_id == Token.id)
                 .where(or_(Token.decimals.is_(None), Token.symbol.is_(None)))
-                .order_by(Token.first_seen_at.desc())
+                .order_by(
+                    activity.c.last_trade.desc().nulls_last(),
+                    Token.first_seen_at.desc(),
+                )
                 .limit(batch)
             )
         )
