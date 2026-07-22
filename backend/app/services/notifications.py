@@ -38,6 +38,7 @@ NOTIFICATION_KINDS: tuple[str, ...] = (
     "system_error",
     "emergency_stop",
     "risk_blocked",
+    "wallet_flagged",
 )
 
 
@@ -99,6 +100,24 @@ class Notification(BaseModel):
             body=f"Skipped {token_mint}: risk {score:.0f} ({detail})",
             severity="warning",
             data={"token_mint": token_mint, "score": score, "reasons": reasons},
+        )
+
+    @classmethod
+    def wallet_flagged(
+        cls, address: str, reasons: list[str], tracked: bool
+    ) -> Notification:
+        detail = "; ".join(reasons) if reasons else "suspicious pattern"
+        action = (
+            "You starred this wallet, so it is STILL being copied — review it."
+            if tracked
+            else "It is excluded from auto-follow."
+        )
+        return cls(
+            kind="wallet_flagged",
+            title="Wallet flagged as possible fake/ring",
+            body=f"{address}: {detail}. {action}",
+            severity="warning",
+            data={"address": address, "reasons": reasons, "tracked": tracked},
         )
 
     @classmethod

@@ -186,6 +186,19 @@ class Settings(BaseSettings):
     rug_outcome_min_age_hours: int = 12
     rug_learning_min_samples: int = 50
 
+    # --- wallet vetting (fake-wallet / ring detection) ---------------------
+    # Suspicious verdicts block AUTO-follow only; manually starred wallets
+    # are warn-only (the star is an explicit human override).
+    vetting_enabled: bool = True
+    vetting_interval_seconds: int = 1_800
+    vetting_batch: int = 10
+    vetting_stale_days: int = 7
+    vetting_funding_max_pages: int = 3
+    vetting_repeat_cast_min_tokens: int = 4
+    vetting_repeat_cast_ratio: float = 0.6
+    vetting_insider_profit_share: float = 0.5
+    vetting_block_suspicious: bool = True
+
     # --- api ---------------------------------------------------------------
     api_host: str = "0.0.0.0"
     api_port: int = 8000

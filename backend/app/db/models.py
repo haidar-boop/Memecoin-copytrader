@@ -742,6 +742,31 @@ class TokenRiskAssessment(Base):
     )
 
 
+class WalletVetting(Base):
+    """A fake-wallet/ring vetting verdict for one wallet. Append-only.
+
+    ``signals`` preserves the raw evidence (funding provenance, counterparty
+    concentration, insider linkage); ``verdict`` is clear | suspicious |
+    inconclusive. The latest verdict per wallet is mirrored to Redis for the
+    evaluator's hot path.
+    """
+
+    __tablename__ = "wallet_vettings"
+
+    id: Mapped[int] = mapped_column(PKBigInt, primary_key=True, autoincrement=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"), index=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    verdict: Mapped[str] = mapped_column(String(16), index=True)
+    funder: Mapped[str | None] = mapped_column(String(64))
+    funder_kind: Mapped[str | None] = mapped_column(String(16))  # cex|wallet|unknown
+    signals: Mapped[dict | None] = mapped_column(JSONVariant)
+    reasons: Mapped[list | None] = mapped_column(JSONVariant)
+    engine_version: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, server_default=UTC_NOW)
+
+    __table_args__ = (Index("ix_wallet_vettings_wallet_ts", "wallet_id", "ts"),)
+
+
 class RiskWeightSnapshot(Base):
     """A learned soft-component weight set for the risk engine. Append-only.
 

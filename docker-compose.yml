@@ -13,6 +13,8 @@ x-backend-env: &backend-env
   # to ~30-60s of inflow for real-time copy trading.
   INGEST_STREAM_MAXLEN: ${INGEST_STREAM_MAXLEN:-1000000}
   ENABLED_DEXES: ${ENABLED_DEXES:-["pumpfun","pumpswap","raydium_amm","raydium_clmm","raydium_cpmm","orca_whirlpool","jupiter"]}
+  VETTING_ENABLED: ${VETTING_ENABLED:-true}
+  VETTING_BLOCK_SUSPICIOUS: ${VETTING_BLOCK_SUSPICIOUS:-true}
   RUG_CHECK_ENABLED: ${RUG_CHECK_ENABLED:-true}
   RUG_MAX_SCORE: ${RUG_MAX_SCORE:-60}
   RUG_FAIL_CLOSED: ${RUG_FAIL_CLOSED:-true}

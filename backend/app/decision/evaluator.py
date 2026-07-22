@@ -298,6 +298,28 @@ class Evaluator:
         )
         safety_blocks = await self._guard.gate_reasons(session, event.token_mint)
 
+        # --- vetting (fake-wallet / ring detection) ------------------------
+        # Suspicious blocks AUTO-follow only; a manual star is an explicit
+        # human override and passes with a loud warning in the reasons.
+        vetting_verdict: str | None = None
+        if settings.vetting_enabled:
+            try:
+                vetting_verdict = await self._redis.get(f"vetting:{wallet.id}")
+            except Exception:  # noqa: BLE001 - vetting cache down = unvetted
+                vetting_verdict = None
+        vetting_suspicious = vetting_verdict == "suspicious"
+        if not settings.vetting_enabled:
+            vetting_note = "vetting disabled"
+        elif vetting_suspicious and wallet.is_tracked:
+            vetting_note = (
+                "WARNING: flagged as possible fake/ring wallet, copied anyway "
+                "because it is manually starred"
+            )
+        elif vetting_suspicious:
+            vetting_note = "flagged as possible fake/ring wallet"
+        else:
+            vetting_note = f"verdict {vetting_verdict or 'unvetted'}"
+
         # --- pre-copy rug-risk assessment ---------------------------------
         rug_verdict: RiskVerdict | None = None
         if settings.rug_check_enabled and self._risk_assessor is not None:
@@ -351,6 +373,13 @@ class Evaluator:
                     and rug_verdict.score <= settings.rug_max_score
                 ),
                 rug_note,
+            ),
+            gate(
+                "leader_vetting",
+                wallet.is_tracked
+                or not settings.vetting_block_suspicious
+                or not vetting_suspicious,
+                vetting_note,
             ),
             gate(
                 "confidence_threshold",

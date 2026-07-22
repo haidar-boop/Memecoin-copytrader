@@ -86,7 +86,16 @@ def test_all_kinds_present() -> None:
     assert "copied_buy" in NOTIFICATION_KINDS
     assert "emergency_stop" in NOTIFICATION_KINDS
     assert "risk_blocked" in NOTIFICATION_KINDS
-    assert len(NOTIFICATION_KINDS) == 12
+    assert "wallet_flagged" in NOTIFICATION_KINDS
+    assert len(NOTIFICATION_KINDS) == 13
+
+
+def test_builder_wallet_flagged() -> None:
+    tracked = Notification.wallet_flagged("AddrX", ["shared_funder_cluster"], tracked=True)
+    assert tracked.kind == "wallet_flagged" and tracked.severity == "warning"
+    assert "STILL being copied" in tracked.body
+    auto = Notification.wallet_flagged("AddrX", [], tracked=False)
+    assert "auto-follow" in auto.body
 
 
 def test_builder_risk_blocked() -> None:

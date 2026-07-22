@@ -309,6 +309,23 @@ class SolanaRpc:
             [tx_base64, {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}],
         )
 
+    async def get_signatures_for_address(
+        self,
+        address: str,
+        limit: int = 1000,
+        before: str | None = None,
+        budget_exempt: bool | None = None,
+    ) -> list[dict]:
+        """Signature history for an address, newest first (paginate with
+        ``before`` = last signature of the previous page)."""
+        options: dict[str, Any] = {"limit": limit, "commitment": "confirmed"}
+        if before:
+            options["before"] = before
+        result = await self.call(
+            "getSignaturesForAddress", [address, options], budget_exempt=budget_exempt
+        )
+        return [] if result is None else list(result)
+
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         result = await self.call(
             "getSignatureStatuses", [signatures, {"searchTransactionHistory": False}]

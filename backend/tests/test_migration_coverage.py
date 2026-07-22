@@ -36,6 +36,7 @@ def test_migration_table_lists_cover_metadata() -> None:
         _table_names(load("0003")._phase3_tables()),
         _table_names(load("0004")._phase4_tables()),
         _table_names(load("0005")._risk_tables()),
+        _table_names(load("0006")._vetting_tables()),
     ]
     covered: set[str] = set().union(*lists)
     declared = set(Base.metadata.tables.keys())

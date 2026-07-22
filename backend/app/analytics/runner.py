@@ -25,6 +25,7 @@ def _build_job_specs(
     settings: Settings,
     session_factory: async_sessionmaker[AsyncSession],
     redis: object | None = None,
+    rpc: object | None = None,
 ) -> list[JobSpec]:
     async def wallet_stats_cycle() -> None:
         from app.analytics import follow_lane, wallet_metrics
@@ -90,12 +91,25 @@ def _build_job_specs(
             if weights:
                 log.info("risk_weights_tuned", weights=weights)
 
+    async def vetting_cycle() -> None:
+        from app.analytics import vetting
+
+        if not settings.vetting_enabled or redis is None or rpc is None:
+            return
+        async with session_factory() as session:
+            vetted = await vetting.run_once(
+                session, rpc, redis, settings, now=datetime.now(tz=UTC)
+            )
+        if vetted:
+            log.info("wallets_vetted", count=vetted)
+
     return [
         ("wallet_stats", float(settings.wallet_stats_interval_seconds), wallet_stats_cycle),
         ("strategy", float(settings.strategy_interval_seconds), strategy_cycle),
         ("patterns", float(settings.patterns_interval_seconds), patterns_cycle),
         ("ml_retrain", float(settings.ml_retrain_interval_seconds), retrain_cycle),
         ("risk_learning", float(settings.rug_learning_interval_seconds), risk_learning_cycle),
+        ("wallet_vetting", float(settings.vetting_interval_seconds), vetting_cycle),
     ]
 
 
@@ -103,6 +117,7 @@ async def run_analytics_loop(
     settings: Settings,
     session_factory: async_sessionmaker[AsyncSession],
     redis: object | None = None,
+    rpc: object | None = None,
 ) -> None:
     """Start every periodic analytics job; returns cleanly on cancellation."""
-    await run_jobs("analytics", _build_job_specs(settings, session_factory, redis))
+    await run_jobs("analytics", _build_job_specs(settings, session_factory, redis, rpc))
