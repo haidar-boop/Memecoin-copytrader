@@ -31,7 +31,7 @@ from collections.abc import Iterator
 from app.ingestion.events import Dex, Side, SwapEvent
 from app.ingestion.parsers import util
 from app.ingestion.parsers.base import BaseDexParser
-from app.ingestion.programs import DEX_BY_PROGRAM, PUMPFUN, PUMPSWAP
+from app.ingestion.programs import DEX_BY_PROGRAM, PUMPFUN, PUMPSWAP, WSOL_MINT
 from app.logging_config import get_logger
 
 log = get_logger(__name__)
@@ -43,6 +43,7 @@ _SELL_LOG = "Program log: Instruction: Sell"
 # pump.fun buy/sell:  [global, fee_recipient, mint, bonding_curve, ...]
 # PumpSwap buy/sell:  [pool, user, global_config, base_mint, quote_mint, ...]
 _STATE_ACCOUNT_INDEX: dict[str, int] = {PUMPFUN: 3, PUMPSWAP: 0}
+_PUMPSWAP_BASE_MINT_INDEX = 3
 
 # If both programs appear in one transaction (e.g. graduation bundles),
 # attribute the trade to the bonding curve first.
@@ -139,6 +140,21 @@ class PumpFunParser(BaseDexParser):
                     return candidate
         return None
 
+    def _wsol_base_pool(self, tx: dict) -> bool:
+        """True when a PumpSwap instruction's BASE mint is wrapped SOL.
+
+        PumpSwap "Buy"/"Sell" logs are phrased relative to the pool's base
+        asset. Most pools use TOKEN as base ("Buy" = buy the memecoin), but
+        WSOL-base pools exist and invert the meaning: "Buy" there means
+        buying WSOL — i.e. SELLING the memecoin. Our events are always
+        phrased relative to the token, so the logged side must be flipped
+        before comparison for these pools.
+        """
+        for accounts in _instruction_account_lists(tx, PUMPSWAP):
+            if len(accounts) > _PUMPSWAP_BASE_MINT_INDEX:
+                return accounts[_PUMPSWAP_BASE_MINT_INDEX] == WSOL_MINT
+        return False
+
     def _check_log_consistency(self, tx: dict, events: list[SwapEvent]) -> None:
         """Warn when Buy/Sell logs disagree with the balance-delta side.
 
@@ -148,6 +164,9 @@ class PumpFunParser(BaseDexParser):
         logged = _logged_sides(tx)
         if not logged:
             return
+        if self._wsol_base_pool(tx):
+            flip = {Side.BUY: Side.SELL, Side.SELL: Side.BUY}
+            logged = {flip[side] for side in logged}
         for event in events:
             if event.side not in logged:
                 log.warning(

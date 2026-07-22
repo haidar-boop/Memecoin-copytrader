@@ -185,3 +185,32 @@ def test_pool_address_none_when_unidentifiable(parser, load_tx) -> None:
     assert len(events) == 1
     assert events[0].pool_address is None
     assert events[0].quote_amount == Decimal("0.5")
+
+
+def test_wsol_base_pool_inverts_logged_side(parser, load_tx, monkeypatch) -> None:
+    """PumpSwap logs are relative to the BASE mint; WSOL-base pools invert
+    them ("Buy" = buying WSOL = selling the token). The consistency check
+    must flip the logged side for those pools instead of crying wolf."""
+    tx = copy.deepcopy(load_tx("pumpfun_pumpswap_buy"))
+    for ix in tx["transaction"]["message"]["instructions"]:
+        if str(ix.get("programId")) == PUMPSWAP:
+            accounts = ix["accounts"]
+            accounts[3], accounts[4] = accounts[4], accounts[3]  # WSOL -> base
+
+    warnings: list = []
+    monkeypatch.setattr(
+        "app.ingestion.parsers.pumpfun.log.warning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    # Trader buys the token => program logs "Sell" (selling base WSOL).
+    tx["meta"]["logMessages"] = ["Program log: Instruction: Sell"]
+    events = parser.parse(tx)
+    assert len(events) == 1 and events[0].side is Side.BUY
+    assert warnings == []  # flipped log agrees with the inferred side
+
+    # A GENUINE mismatch on a WSOL-base pool must still warn.
+    tx["meta"]["logMessages"] = ["Program log: Instruction: Buy"]
+    events = parser.parse(tx)
+    assert events[0].side is Side.BUY
+    assert len(warnings) == 1
