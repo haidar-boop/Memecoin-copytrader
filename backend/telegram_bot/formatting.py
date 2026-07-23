@@ -221,3 +221,73 @@ def format_recent_trades(rows: Iterable[dict[str, Any]]) -> str:
             f"{age_txt}"
         )
     return "\n".join(lines)
+
+
+def _first_failing_gate(reasons: Any) -> dict[str, Any] | None:
+    """The first gate that failed — reasons are appended in evaluation order,
+    so the earliest failure is the one actually blocking the copy."""
+    if not isinstance(reasons, list):
+        return None
+    for reason in reasons:
+        if isinstance(reason, dict) and not reason.get("passed", True):
+            return reason
+    return None
+
+
+def format_decisions(decisions: Iterable[dict[str, Any]], hours: int = 2) -> str:
+    """Render the recent copy/skip decision log — the answer to "why aren't we
+    trading". Summarizes copy vs skip counts, ranks the gates doing the
+    blocking, and shows the deciding reason on the newest few evaluations.
+    """
+    decisions = list(decisions)
+    header = f"\U0001f50e Why trades are/aren't copied (last {hours}h)"
+    if not decisions:
+        return "\n".join(
+            [
+                header,
+                "No leader buys were evaluated in this window.",
+                "",
+                "A copy only happens when a FOLLOWED wallet makes a fresh buy "
+                "the bot sees live — a high confidence score by itself never "
+                "triggers one. So either the top wallets haven't bought "
+                "recently, or their buys aren't reaching the copy engine yet.",
+            ]
+        )
+
+    copied = sum(1 for d in decisions if d.get("decision") == "copy")
+    skipped = len(decisions) - copied
+    lines = [
+        header,
+        f"Evaluated: {len(decisions)}  |  Copied: {copied}  |  Skipped: {skipped}",
+    ]
+
+    blockers: dict[str, int] = {}
+    for d in decisions:
+        if d.get("decision") == "copy":
+            continue
+        gate = _first_failing_gate(d.get("reasons"))
+        name = str(gate.get("gate", "unknown")) if gate else "unknown"
+        blockers[name] = blockers.get(name, 0) + 1
+    if blockers:
+        lines.append("")
+        lines.append("Top blocking gates:")
+        for name, count in sorted(
+            blockers.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]:
+            lines.append(f"• {name} — {count}")
+
+    lines.append("")
+    lines.append("Latest:")
+    for d in decisions[:3]:
+        wallet = _short(d.get("wallet"))
+        if d.get("decision") == "copy":
+            lines.append(f"✅ copy {wallet}")
+            continue
+        gate = _first_failing_gate(d.get("reasons"))
+        if gate:
+            note = str(gate.get("note", "")).strip()
+            note_txt = f": {note}" if note else ""
+            lines.append(f"⛔ skip {wallet} — {gate.get('gate', '?')}{note_txt}")
+        else:
+            lines.append(f"⛔ skip {wallet}")
+    return "\n".join(lines)

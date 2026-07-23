@@ -31,6 +31,7 @@ from app.db.models import (
     Report,
     Token,
     Trade,
+    TradeDecision,
     Wallet,
     WalletStats,
     WalletVetting,
@@ -39,6 +40,7 @@ from app.decision.safety import EMERGENCY_STOP_KEY, SafetyGuard
 from app.logging_config import get_logger
 from app.services.redis import NOTIFICATIONS_CHANNEL
 from telegram_bot.formatting import (
+    format_decisions,
     format_health,
     format_portfolio,
     format_recent_trades,
@@ -352,6 +354,39 @@ class TelegramNotifier:
             )
         return format_recent_trades(out)
 
+    async def decisions_text(self, hours: int = 2, sample: int = 200) -> str:
+        """Summarize the recent copy/skip decision log — "why aren't we
+        trading". Pure DB read of ``trade_decisions``; costs zero RPC credits
+        and changes nothing. Surfaces the same audit trail that was previously
+        only reachable via psql on the droplet.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        TradeDecision.decision,
+                        TradeDecision.reasons,
+                        Wallet.address,
+                    )
+                    .join(
+                        Wallet,
+                        Wallet.id == TradeDecision.leader_wallet_id,
+                        isouter=True,
+                    )
+                    .where(TradeDecision.created_at >= since)
+                    .order_by(TradeDecision.created_at.desc())
+                    .limit(sample)
+                )
+            ).all()
+        decisions = [
+            {"decision": decision, "reasons": reasons, "wallet": address}
+            for decision, reasons, address in rows
+        ]
+        return format_decisions(decisions, hours=hours)
+
     def _is_operator(self, chat_id: str | int | None) -> bool:
         return str(chat_id) == str(self._settings.telegram_chat_id)
 
@@ -448,6 +483,10 @@ class TelegramNotifier:
         async def _trades(message: Message) -> None:
             await message.answer(await self.trades_text())
 
+        @dp.message(Command("why", "decisions"))
+        async def _why(message: Message) -> None:
+            await message.answer(await self.decisions_text())
+
         @dp.message(Command("stop"))
         async def _stop(message: Message) -> None:
             reply = await self.stop(message.chat.id)
@@ -522,6 +561,7 @@ HELP_TEXT = (
     "/portfolio — open positions and realized PnL\n"
     "/wallets — top wallets by confidence\n"
     "/trades — most recent observed trades\n"
+    "/why — why trades are/aren't being copied (recent decision log)\n"
     "/report — latest weekly report\n"
     "/stop — FULL STOP: halt trading AND freeze all RPC (zero credits)\n"
     "/resume — clear the emergency stop and unfreeze RPC\n"

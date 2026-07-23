@@ -496,6 +496,72 @@ async def test_wallets_text_flags_suspicious_wallet(session_factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_decisions_text_summarizes_blocking_gates(session_factory) -> None:
+    from datetime import timedelta
+
+    from app.db.models import TradeDecision, Wallet
+
+    now = datetime.now(tz=UTC)
+
+    def _reasons(*, fail: str | None) -> list[dict[str, Any]]:
+        # Gates in evaluation order; the first failure is the effective blocker.
+        order = ["copy_enabled", "followed_leader", "confidence_threshold",
+                 "risk_threshold", "liquidity_floor"]
+        return [
+            {"gate": g, "passed": g != fail,
+             "note": "71.3 vs max 70" if g == "risk_threshold" else "ok"}
+            for g in order
+        ]
+
+    async with session_factory() as session:
+        session.add(
+            Wallet(id=1, address="LeadWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                   first_seen_at=now, last_seen_at=now)
+        )
+        # Two blocked on risk, one on liquidity, one copy — plus an old row
+        # outside the 2h window that must be excluded.
+        session.add_all(
+            [
+                TradeDecision(created_at=now, side="buy", mode="paper",
+                              decision="skip", leader_wallet_id=1,
+                              reasons=_reasons(fail="risk_threshold")),
+                TradeDecision(created_at=now, side="buy", mode="paper",
+                              decision="skip", leader_wallet_id=1,
+                              reasons=_reasons(fail="risk_threshold")),
+                TradeDecision(created_at=now, side="buy", mode="paper",
+                              decision="skip", leader_wallet_id=1,
+                              reasons=_reasons(fail="liquidity_floor")),
+                TradeDecision(created_at=now, side="buy", mode="paper",
+                              decision="copy", leader_wallet_id=1,
+                              reasons=_reasons(fail=None)),
+                TradeDecision(created_at=now - timedelta(hours=5), side="buy",
+                              mode="paper", decision="skip", leader_wallet_id=1,
+                              reasons=_reasons(fail="confidence_threshold")),
+            ]
+        )
+        await session.commit()
+
+    notifier = TelegramNotifier(Settings(telegram_chat_id="1"), _StubRedis(), session_factory)
+    text = await notifier.decisions_text()
+    assert "Evaluated: 4" in text  # the 5h-old row is excluded by the window
+    assert "Copied: 1" in text
+    assert "Skipped: 3" in text
+    # risk_threshold blocked the most, so it heads the ranking.
+    assert "risk_threshold — 2" in text
+    assert "liquidity_floor — 1" in text
+    assert "confidence_threshold" not in text  # only the excluded old row hit it
+
+
+@pytest.mark.asyncio
+async def test_decisions_text_empty_window_explains_no_copies(session_factory) -> None:
+    notifier = TelegramNotifier(Settings(telegram_chat_id="1"), _StubRedis(), session_factory)
+    text = await notifier.decisions_text()
+    assert "No leader buys were evaluated" in text
+    # Teaches the core point: confidence alone does not trigger a copy.
+    assert "fresh buy" in text
+
+
+@pytest.mark.asyncio
 async def test_resume_restricted_to_operator_chat() -> None:
     calls: list[str] = []
 
