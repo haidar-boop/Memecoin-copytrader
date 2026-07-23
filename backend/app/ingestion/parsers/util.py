@@ -194,22 +194,28 @@ def infer_swap_events(
 
     if len(non_quote) == 1:
         (mint, delta), = non_quote.items()
-        # Prefer a SOL leg flowing opposite to the token, then a stable leg.
-        # Both WSOL and native lamports can move in the same tx (unwrap dust,
-        # rent, second route legs); the LARGER opposite-signed leg is the
-        # trade — picking WSOL unconditionally let 0.001 SOL of dust
-        # misrepresent a 1.5 SOL native-settled buy.
+        # Pick the counter-leg (the quote the token traded against) as the
+        # LARGEST opposite-signed flow across BOTH the SOL and stable pools.
+        # WSOL, native lamports, and a stablecoin can all move in one tx
+        # (unwrap dust, ATA rent ~0.00204 SOL, route legs); comparing only SOL
+        # first let rent-sized SOL preempt a real USDC/USDT leg (a 100-USDC buy
+        # recorded as a 0.002-SOL buy, corrupting price/PnL/scores). Taking the
+        # max magnitude across both pools makes rent lose to the real quote and
+        # still makes a genuine 1.5 SOL leg win over 0.001 SOL of dust.
         native_flow = native if abs(native) >= MIN_SOL_FLOW else Decimal(0)
-        sol_legs = [
-            flow
+        candidates: list[tuple[str, Decimal]] = [
+            (WSOL_MINT, flow)
             for flow in (wsol_delta, native_flow)
             if flow != 0 and (flow > 0) != (delta > 0)
         ]
-        if sol_legs:
-            return [build(mint, delta, WSOL_MINT, abs(max(sol_legs, key=abs)))]
-        for stable_mint, sdelta in stable_deltas.items():
-            if (sdelta > 0) != (delta > 0):
-                return [build(mint, delta, stable_mint, abs(sdelta))]
+        candidates += [
+            (stable_mint, sdelta)
+            for stable_mint, sdelta in stable_deltas.items()
+            if (sdelta > 0) != (delta > 0)
+        ]
+        if candidates:
+            quote_mint, flow = max(candidates, key=lambda c: abs(c[1]))
+            return [build(mint, delta, quote_mint, abs(flow))]
         # No identifiable counter-leg (LP ops, transfers): not a swap.
         return []
 

@@ -123,6 +123,33 @@ def test_stable_quoted_swap() -> None:
     assert events[0].side == Side.BUY
 
 
+def test_stable_quoted_buy_not_preempted_by_ata_rent() -> None:
+    # Regression: a 60-USDC buy whose tx also pays ~0.00204 SOL of ATA-creation
+    # rent. The rent is opposite-signed to the +token delta and clears
+    # MIN_SOL_FLOW, so the old code returned WSOL/0.00204 and discarded the real
+    # USDC leg — collapsing price/PnL. The larger leg (USDC) must win.
+    fee = 5000
+    ata_rent = 2_040_000  # lamports
+    tx = make_tx(
+        fee=fee,
+        pre_lamports=[10_000_000_000, 0],
+        post_lamports=[10_000_000_000 - fee - ata_rent, 0],
+        pre_tokens=[
+            token_balance(2, USDC_MINT, TRADER, "100000000"),
+            token_balance(3, MEME, TRADER, "0"),
+        ],
+        post_tokens=[
+            token_balance(2, USDC_MINT, TRADER, "40000000"),
+            token_balance(3, MEME, TRADER, "600000000"),
+        ],
+    )
+    events = util.infer_swap_events(tx, TRADER, Dex.ORCA_WHIRLPOOL, "prog")
+    assert len(events) == 1
+    assert events[0].quote_mint == USDC_MINT
+    assert events[0].quote_amount == Decimal("60")
+    assert events[0].side == Side.BUY
+
+
 def test_token_to_token_emits_two_events() -> None:
     tx = make_tx(
         pre_tokens=[
