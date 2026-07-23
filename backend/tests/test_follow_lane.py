@@ -200,3 +200,53 @@ async def test_writer_drains_priority_first_and_budget_exempt() -> None:
     # priority stream after dropping.
     assert rpc.calls == [("lead-sig", True)]
     assert acked == [(settings.ingest_priority_stream_key, "1-0")]
+
+
+async def test_autoclaim_reprocesses_reclaimed_entries() -> None:
+    """Regression: XAUTOCLAIM-reclaimed entries (a crashed consumer's pending
+    list) must be fetched/persisted, not discarded — the run loop's ``>`` read
+    never re-delivers a consumer's own PEL, so dropping them lost signals."""
+    from app.ingestion.fetcher import IngestWriter
+
+    settings = Settings(ingest_max_attempts=1)  # drop (no 2s retry sleep)
+    acked: list[tuple[str, str]] = []
+
+    class ReclaimRedis:
+        def __init__(self) -> None:
+            self.autoclaim_calls = 0
+
+        async def xautoclaim(self, stream, group, consumer, min_idle_time, count):
+            self.autoclaim_calls += 1
+            # First scan of the priority stream returns one reclaimed entry;
+            # everything else is empty. Mirrors redis-py's 3-tuple response.
+            if (
+                stream == settings.ingest_priority_stream_key
+                and self.autoclaim_calls == 1
+            ):
+                return ["0-0", [("7-0", {"signature": "reclaimed-sig", "attempts": "0"})], []]
+            return ["0-0", [], []]
+
+        async def xack(self, stream, group, entry_id):
+            acked.append((stream, entry_id))
+            return 1
+
+        async def get(self, *a, **k):
+            return None  # sol price lookup
+
+    class ExemptRpc:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, bool | None]] = []
+
+        async def get_transaction(self, signature, budget_exempt=None):
+            self.calls.append((signature, budget_exempt))
+            return None  # not found -> requeue path (drops at max_attempts=1)
+
+    redis = ReclaimRedis()
+    rpc = ExemptRpc()
+    writer = IngestWriter(settings, redis, rpc, session_factory=None)
+    await writer._autoclaim_if_due()
+
+    # The reclaimed priority signature was fetched budget-exempt and acked
+    # (dropped at max_attempts=1) — NOT silently discarded.
+    assert ("reclaimed-sig", True) in rpc.calls
+    assert (settings.ingest_priority_stream_key, "7-0") in acked

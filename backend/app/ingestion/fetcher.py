@@ -109,29 +109,9 @@ class IngestWriter:
                 messages = entries[0][1]
                 if not messages:
                     continue
-                fetched = await asyncio.gather(
-                    *(
-                        self._fetch(entry_id, fields, budget_exempt=budget_exempt)
-                        for entry_id, fields in messages
-                    )
+                await self._process_batch(
+                    messages, active_stream=active_stream, budget_exempt=budget_exempt
                 )
-                # Persist sequentially, oldest slot first (see module
-                # docstring); retries requeue concurrently afterwards so
-                # their pacing delay never stalls the write path.
-                sol_price = await self._sol_price()
-                retries: list[tuple[str, dict]] = []
-                for entry_id, fields, tx in sorted(fetched, key=_slot_order):
-                    if tx is None or not await self._persist_and_ack(
-                        entry_id, fields, tx, sol_price, stream=active_stream
-                    ):
-                        retries.append((entry_id, fields))
-                if retries:
-                    await asyncio.gather(
-                        *(
-                            self._requeue_or_drop(entry_id, fields, stream=active_stream)
-                            for entry_id, fields in retries
-                        )
-                    )
                 try:
                     metrics.QUEUE_DEPTH.set(await self._redis.xlen(stream))
                 except Exception:
@@ -142,6 +122,41 @@ class IngestWriter:
                 log.exception("ingest_writer_loop_error")
                 await asyncio.sleep(1)
 
+    async def _process_batch(
+        self, messages: list, active_stream: str, budget_exempt: bool
+    ) -> None:
+        """Fetch -> persist -> requeue one batch of stream entries.
+
+        Shared by the live ``>`` read path and the XAUTOCLAIM reclaim path, so
+        entries recovered from a crashed consumer are actually reprocessed
+        rather than discarded.
+        """
+        if not messages:
+            return
+        fetched = await asyncio.gather(
+            *(
+                self._fetch(entry_id, fields, budget_exempt=budget_exempt)
+                for entry_id, fields in messages
+            )
+        )
+        # Persist sequentially, oldest slot first (see module docstring);
+        # retries requeue concurrently afterwards so their pacing delay never
+        # stalls the write path.
+        sol_price = await self._sol_price()
+        retries: list[tuple[str, dict]] = []
+        for entry_id, fields, tx in sorted(fetched, key=_slot_order):
+            if tx is None or not await self._persist_and_ack(
+                entry_id, fields, tx, sol_price, stream=active_stream
+            ):
+                retries.append((entry_id, fields))
+        if retries:
+            await asyncio.gather(
+                *(
+                    self._requeue_or_drop(entry_id, fields, stream=active_stream)
+                    for entry_id, fields in retries
+                )
+            )
+
     async def _autoclaim_if_due(self) -> None:
         loop_time = asyncio.get_running_loop().time()
         if loop_time - self._last_autoclaim < AUTOCLAIM_INTERVAL_SECONDS:
@@ -151,8 +166,9 @@ class IngestWriter:
             self._settings.ingest_priority_stream_key,
             self._settings.ingest_stream_key,
         ):
+            budget_exempt = stream == self._settings.ingest_priority_stream_key
             try:
-                await self._redis.xautoclaim(
+                result = await self._redis.xautoclaim(
                     stream,
                     self._settings.ingest_group,
                     self._consumer,
@@ -161,6 +177,23 @@ class IngestWriter:
                 )
             except Exception as exc:
                 log.warning("xautoclaim_failed", stream=stream, error=str(exc))
+                continue
+            # redis-py returns [cursor, [(id, fields), ...], deleted?]. These
+            # reclaimed entries (a crashed consumer's un-acked pending list)
+            # MUST be reprocessed: run() only reads new ``>`` entries and never
+            # re-delivers a consumer's own pending list, so discarding them —
+            # the original bug — permanently lost every in-flight signature
+            # after a writer restart.
+            messages = (
+                result[1]
+                if isinstance(result, (list, tuple)) and len(result) > 1
+                else []
+            )
+            if messages:
+                log.info("xautoclaim_reclaimed", stream=stream, count=len(messages))
+                await self._process_batch(
+                    messages, active_stream=stream, budget_exempt=budget_exempt
+                )
 
     async def _fetch(
         self, entry_id: str, fields: dict, budget_exempt: bool = False
