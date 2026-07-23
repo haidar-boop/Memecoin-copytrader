@@ -139,7 +139,7 @@ async def test_writer_drains_priority_first_and_budget_exempt() -> None:
     from app.ingestion.fetcher import IngestWriter
 
     settings = Settings(ingest_max_attempts=1)  # drop (no 2s retry sleep)
-    reads: list[tuple[str, int]] = []
+    reads: list[tuple[str, int | None]] = []
     acked: list[tuple[str, str]] = []
 
     class WriterStubRedis(LaneStubRedis):
@@ -188,9 +188,12 @@ async def test_writer_drains_priority_first_and_budget_exempt() -> None:
 
     # Priority stream polled (non-blocking) BEFORE the main stream, every
     # cycle; the main stream is only consulted when the lane is empty.
-    assert reads[0] == (settings.ingest_priority_stream_key, 0)
+    # block MUST be None (non-blocking): block=0 means "wait forever" in
+    # redis-py, which would hang on an idle priority lane and starve the
+    # main stream. The main-stream read blocks up to 5000ms.
+    assert reads[0] == (settings.ingest_priority_stream_key, None)
     assert (settings.ingest_stream_key, 5000) in reads
-    assert reads.index((settings.ingest_priority_stream_key, 0)) < reads.index(
+    assert reads.index((settings.ingest_priority_stream_key, None)) < reads.index(
         (settings.ingest_stream_key, 5000)
     )
     # The leader signature was fetched budget-exempt and acked on the

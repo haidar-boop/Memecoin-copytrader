@@ -84,12 +84,15 @@ class IngestWriter:
                 # fetched NOW (they gate live copy decisions), never queued
                 # behind the sampled firehose. Non-blocking peek; fall back
                 # to the main stream only when the lane is empty.
+                # NB: block=None is the non-blocking form. block=0 would mean
+                # "BLOCK 0" = wait forever, which would hang here whenever the
+                # priority lane is idle and starve the main stream entirely.
                 entries = await self._redis.xreadgroup(
                     group,
                     self._consumer,
                     {priority: ">"},
                     count=self._settings.ingest_batch_size,
-                    block=0,
+                    block=None,
                 )
                 active_stream, budget_exempt = priority, True
                 if not entries or not entries[0][1]:
