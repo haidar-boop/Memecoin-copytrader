@@ -552,6 +552,14 @@ async def test_decisions_text_summarizes_blocking_gates(session_factory) -> None
     assert "confidence_threshold" not in text  # only the excluded old row hit it
 
 
+def test_format_decisions_marks_capped_counts() -> None:
+    from telegram_bot.formatting import format_decisions
+
+    rows = [{"decision": "skip", "wallet": "W", "reasons": []}] * 3
+    assert "Evaluated: 3 " in format_decisions(rows)
+    assert "Evaluated: latest 3 " in format_decisions(rows, capped=True)
+
+
 @pytest.mark.asyncio
 async def test_decisions_text_empty_window_explains_no_copies(session_factory) -> None:
     notifier = TelegramNotifier(Settings(telegram_chat_id="1"), _StubRedis(), session_factory)

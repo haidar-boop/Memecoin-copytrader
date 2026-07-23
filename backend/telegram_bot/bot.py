@@ -385,7 +385,9 @@ class TelegramNotifier:
             {"decision": decision, "reasons": reasons, "wallet": address}
             for decision, reasons, address in rows
         ]
-        return format_decisions(decisions, hours=hours)
+        # When the row count equals the fetch limit the window likely holds
+        # more; say "latest N" so the header never overstates completeness.
+        return format_decisions(decisions, hours=hours, capped=len(rows) == sample)
 
     def _is_operator(self, chat_id: str | int | None) -> bool:
         return str(chat_id) == str(self._settings.telegram_chat_id)

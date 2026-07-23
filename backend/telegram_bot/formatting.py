@@ -234,10 +234,15 @@ def _first_failing_gate(reasons: Any) -> dict[str, Any] | None:
     return None
 
 
-def format_decisions(decisions: Iterable[dict[str, Any]], hours: int = 2) -> str:
+def format_decisions(
+    decisions: Iterable[dict[str, Any]], hours: int = 2, capped: bool = False
+) -> str:
     """Render the recent copy/skip decision log — the answer to "why aren't we
     trading". Summarizes copy vs skip counts, ranks the gates doing the
     blocking, and shows the deciding reason on the newest few evaluations.
+
+    ``capped`` marks that the query hit its row limit, so the counts reflect
+    the most recent N evaluations rather than every one in the window.
     """
     decisions = list(decisions)
     header = f"\U0001f50e Why trades are/aren't copied (last {hours}h)"
@@ -256,9 +261,10 @@ def format_decisions(decisions: Iterable[dict[str, Any]], hours: int = 2) -> str
 
     copied = sum(1 for d in decisions if d.get("decision") == "copy")
     skipped = len(decisions) - copied
+    count_label = f"latest {len(decisions)}" if capped else str(len(decisions))
     lines = [
         header,
-        f"Evaluated: {len(decisions)}  |  Copied: {copied}  |  Skipped: {skipped}",
+        f"Evaluated: {count_label}  |  Copied: {copied}  |  Skipped: {skipped}",
     ]
 
     blockers: dict[str, int] = {}
