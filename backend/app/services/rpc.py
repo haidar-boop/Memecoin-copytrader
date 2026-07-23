@@ -261,13 +261,21 @@ class SolanaRpc:
             return None
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
         backoff = 0.5
+        execution_critical = method in BUDGET_EXEMPT_METHODS
         if budget_exempt is None:
-            budget_exempt = method in BUDGET_EXEMPT_METHODS
+            budget_exempt = execution_critical
         for attempt in range(self._max_retries + 1):
             # Each HTTP attempt (retries included) costs one provider credit.
             if budget_exempt:
                 if self._priority_budget is not None:
-                    await self._priority_budget.acquire()
+                    # Execution-critical calls (a live position's send/simulate/
+                    # confirm) are COUNTED but must never BLOCK: if the shared
+                    # priority budget is already spent, the plain acquire() would
+                    # sleep until the next UTC day and strand a live exit
+                    # mid-trade while the position bleeds out. Opportunistic
+                    # priority prefetches (leader-buy fetches, rug/liquidity
+                    # probes) keep the blocking form so they still honor the cap.
+                    await self._priority_budget.acquire(exempt=execution_critical)
             elif self._budget is not None:
                 await self._budget.acquire()
             await self._limiter.wait()

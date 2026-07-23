@@ -219,6 +219,64 @@ async def test_solana_rpc_exempt_without_priority_budget_is_unbounded():
     assert main_redis.counters == {}  # never touched
 
 
+async def test_execution_critical_call_never_blocks_on_exhausted_priority_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: when the shared priority budget is spent, an execution-
+    critical method (send/simulate/confirm) must be COUNTED but never sleep —
+    a live position exit cannot wait until the next UTC day. An opportunistic
+    budget_exempt prefetch, by contrast, still blocks on the cap."""
+    from app.services.rpc import SolanaRpc
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"result": "ok"}
+
+        def raise_for_status(self):
+            pass
+
+    class FakeClient:
+        async def post(self, url, json):
+            return FakeResponse()
+
+        async def aclose(self):
+            pass
+
+    priority_redis = FakeRedis()
+    priority_budget = RpcBudget(
+        priority_redis, daily_limit=1, key_prefix=RpcBudget.PRIORITY_KEY_PREFIX
+    )
+    rpc = SolanaRpc("http://test", budget=None, priority_budget=priority_budget)
+    rpc._client = FakeClient()
+    rpc._limiter._interval = 0.0
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        priority_redis.counters.clear()  # simulate the UTC day rolling over
+
+    monkeypatch.setattr("app.services.rpc.asyncio.sleep", fake_sleep)
+
+    # Spend the single-credit priority budget.
+    await rpc.call("getSignatureStatuses")
+    (priority_key,) = priority_redis.counters
+    assert priority_redis.counters[priority_key] == 1
+
+    # Priority budget now exhausted. An execution-critical send must NOT block
+    # (no sleep) yet must still be counted — this is the bug being fixed.
+    await rpc.call("sendTransaction")
+    assert sleeps == []  # never stranded waiting for the day to roll over
+    assert priority_redis.counters[priority_key] == 2  # but the credit is counted
+
+    # An opportunistic budget_exempt prefetch still honors the cap: it blocks
+    # once, then resumes on the simulated rollover.
+    await rpc.call("getTransaction", budget_exempt=True)
+    assert sleeps == [RpcBudget.POLL_SECONDS]
+
+
 class FreezeRedis:
     """Redis stub exposing the freeze key surface."""
 
