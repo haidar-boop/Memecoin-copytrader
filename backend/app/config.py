@@ -140,7 +140,7 @@ class Settings(BaseSettings):
     copy_auto_follow: bool = True
     copy_min_wallet_confidence: float = 65.0
     # Decision thresholds and filters.
-    copy_min_confidence: float = 60.0
+    copy_min_confidence: float = 50.0
     copy_max_risk: float = 70.0
     copy_min_liquidity_sol: float = 25.0
     copy_min_market_cap_usd: float = 10_000.0
